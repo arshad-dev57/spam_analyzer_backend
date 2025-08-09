@@ -1,11 +1,13 @@
-// api/index.js
+// index.js  (root)
 const express = require('express');
-const dotenv = require('dotenv');
 const cors = require('cors');
+const dotenv = require('dotenv');
 const connectDB = require('./config/db');
 
-// Load env
-dotenv.config();
+// load env (local dev ke liye; Vercel par vars dashboard se aayenge)
+if (process.env.NODE_ENV !== 'production') {
+  dotenv.config();
+}
 
 const app = express();
 
@@ -16,21 +18,24 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Health Check
+// Health
 app.get('/', (req, res) => {
   res.send('🚀 Spam Analyzer backend is running!');
 });
 
-// Routes
-app.use('/api/test', require('../routes/testRoutes'));
-app.use('/api/screenshot', require('../routes/screenshot_routes'));
+// ✅ Correct paths (because index.js is at root)
+app.use('/api/test', require('./routes/testRoutes'));
+app.use('/api/screenshot', require('./routes/screenshot_routes'));
 
-// Connect to DB (only once in serverless)
+// Connect DB once (serverless safe)
 (async () => {
-  await connectDB();
+  try {
+    await connectDB();
+  } catch (e) {
+    // runtime logs me clear error dikh jayega
+    console.error('DB connect error at boot:', e?.message);
+  }
 })();
 
-// Export for Vercel
-module.exports = (req, res) => {
-  return app(req, res);
-};
+// Export for Vercel (no app.listen)
+module.exports = (req, res) => app(req, res);
