@@ -4,7 +4,7 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const connectDB = require('./config/db');
 
-// Load env locally (Vercel par vars dashboard se aate hain)
+// Load env only in local/dev
 if (process.env.NODE_ENV !== 'production') {
   dotenv.config();
 }
@@ -21,23 +21,20 @@ app.get('/', (req, res) => {
   res.send('🚀 Spam Analyzer backend is running!');
 });
 
-// Routes (index.js root me hai isliye ./routes/...)
+// Routes
 app.use('/api/test', require('./routes/testRoutes'));
 app.use('/api/screenshot', require('./routes/screenshot_routes'));
 
-// DB connect once
+// Connect DB once
 (async () => {
-  try {
-    await connectDB();
-  } catch (e) {
-    console.error('DB connect error at boot:', e?.message);
-  }
+  try { await connectDB(); }
+  catch (e) { console.error('DB connect error at boot:', e?.message); }
 })();
 
-// --- Vercel handler export ---
+// Export for Vercel
 module.exports = (req, res) => app(req, res);
 
-// --- Local server start (only when run directly) ---
+// Start server locally (when run via `node index.js` / nodemon)
 if (require.main === module && !process.env.VERCEL) {
   const PORT = process.env.PORT || 5000;
   app.listen(PORT, '0.0.0.0', () => {
