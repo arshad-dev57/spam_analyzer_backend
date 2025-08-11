@@ -4,23 +4,47 @@ const sharp = require('sharp');
 const AnalyzedScreenshot = require('../models/analyzedScreenshot');
 const streamifier = require('streamifier');
 
-const streamUpload = (buffer, folder) => {
+const OCR_TIMEOUT_MS = 20_000; // avoid serverless timeouts
+const TESS_LANG_PATH = 'https://tessdata.projectnaptha.com/4.0.0';
+
+// ---- helpers ----
+function streamUpload(buffer, folder) {
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
-      { folder },
-      (error, result) => {
-        if (result) {
-          resolve(result);
-        } else {
-          reject(error);
-        }
-      }
+      { folder, resource_type: 'image' },
+      (err, result) => (err ? reject(err) : resolve(result))
     );
     streamifier.createReadStream(buffer).pipe(stream);
   });
 }
 
-const uploadScreenshot = async (req, res, next) => {
+async function compressImageBuffer(inputBuffer) {
+  const targetSize = 100 * 1024;
+  let quality = 80, width = 1000, best = inputBuffer;
+
+  while (width >= 200) {
+    for (let q = quality; q >= 30; q -= 10) {
+      const out = await sharp(inputBuffer)
+        .resize({ width, withoutEnlargement: true })
+        .jpeg({ quality: q, progressive: true, chromaSubsampling: '4:4:4' })
+        .toBuffer();
+      if (out.byteLength <= targetSize) return out;
+      best = out;
+    }
+    width -= 100;
+  }
+  return best;
+}
+
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, rej) => setTimeout(() => rej(new Error('OCR_TIMEOUT')), ms)),
+  ]);
+}
+
+// ---- controllers ----
+const uploadScreenshot = async (req, res) => {
   try {
     if (!req.file?.buffer) {
       return res.status(400).json({ success: false, message: 'No file uploaded' });
@@ -28,20 +52,29 @@ const uploadScreenshot = async (req, res, next) => {
 
     const folderName = `screenshots/${new Date().toISOString().split('T')[0]}`;
 
-    // 1) Compress FROM BUFFER (no disk I/O)
+    // 1) compress buffer
     const compressedBuffer = await compressImageBuffer(req.file.buffer);
 
-    // 2) Upload to Cloudinary FROM BUFFER
+    // 2) upload to cloudinary
     const result = await streamUpload(compressedBuffer, folderName);
 
-    // 3) OCR on BUFFER (no file path)
-    const { data: { text } } = await tesseract.recognize(compressedBuffer, 'eng');
+    // 3) OCR with timeout + CDN langPath (prevents long cold starts)
+    let text = '';
+    try {
+      const ocrRes = await withTimeout(
+        tesseract.recognize(compressedBuffer, 'eng', { langPath: TESS_LANG_PATH }),
+        OCR_TIMEOUT_MS
+      );
+      text = ocrRes.data.text || '';
+    } catch (e) {
+      console.warn('OCR skipped:', e.message);
+    }
+
     const containsSpam = /spam/i.test(text);
     const matches = text.match(/\+?[0-9][0-9\s\-()]{7,}/g);
     const extracted = matches?.[0]?.trim() || 'Not Found';
 
-    // 4) Save to DB
-    const newAnalyzed = await AnalyzedScreenshot.create({
+    const doc = await AnalyzedScreenshot.create({
       imageUrl: result.secure_url,
       extractedNumber: extracted,
       time: new Date(),
@@ -50,17 +83,16 @@ const uploadScreenshot = async (req, res, next) => {
       isSpam: containsSpam,
     });
 
-    // 5) Respond
     return res.status(201).json({
       success: true,
       data: {
         screenshotUrl: result.secure_url,
         extractedNumber: extracted,
-        id: newAnalyzed._id,
-        time: newAnalyzed.time,
-        toNumber: newAnalyzed.toNumber,
-        carrier: newAnalyzed.carrier,
-        isSpam: newAnalyzed.isSpam,
+        id: doc._id,
+        time: doc.time,
+        toNumber: doc.toNumber,
+        carrier: doc.carrier,
+        isSpam: doc.isSpam,
       },
     });
   } catch (err) {
@@ -69,33 +101,9 @@ const uploadScreenshot = async (req, res, next) => {
   }
 };
 
-async function compressImageBuffer(inputBuffer) {
-  const targetSize = 100 * 1024; 
-  let quality = 80;
-  let width = 1000;
-  let best = inputBuffer;
-
-  while (width >= 200) {
-    let q = quality;
-    while (q >= 30) {
-      const out = await sharp(inputBuffer)
-        .resize({ width, withoutEnlargement: true })
-        .jpeg({ quality: q })
-        .toBuffer();
-
-      if (out.byteLength <= targetSize) return out;
-      best = out;
-      q -= 10;
-    }
-    width -= 100;
-  }
-  return best; // couldn't reach 100KB, return smallest tried
-}
-
 const getAllAnalyzedScreenshots = async (req, res) => {
   try {
-    const all = await AnalyzedScreenshot.find().sort({ analyzedAt: -1 });
-
+    const all = await AnalyzedScreenshot.find().sort({ time: -1 });
     res.status(200).json({
       success: true,
       count: all.length,
@@ -114,7 +122,5 @@ const getAllAnalyzedScreenshots = async (req, res) => {
     res.status(500).json({ success: false, error: 'Server error' });
   }
 };
-module.exports = {
-  uploadScreenshot,
-  getAllAnalyzedScreenshots,
-};
+
+module.exports = { uploadScreenshot, getAllAnalyzedScreenshots };
