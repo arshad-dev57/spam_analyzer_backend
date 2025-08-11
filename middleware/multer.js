@@ -1,8 +1,11 @@
-const multer = require("multer");
-const storage = multer.diskStorage({
-  filename: function (req,file,cb) {
-    cb(null, file.originalname)
-  }
+// middleware/multer.js
+const multer = require('multer');
+
+const storage = multer.memoryStorage(); // store file in memory
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 8 * 1024 * 1024 } // 4MB limit, adjust if needed
 });
-const upload = multer({ storage: storage });
+
 module.exports = upload;

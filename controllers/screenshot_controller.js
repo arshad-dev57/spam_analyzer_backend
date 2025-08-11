@@ -1,41 +1,40 @@
-const fs = require('fs');
-const path = require('path');
 const cloudinary = require('../config/cloudinary');
 const tesseract = require('tesseract.js');
 const sharp = require('sharp');
-const streamifier = require('streamifier');
-const Screenshot = require('../models/screenshots');
 const AnalyzedScreenshot = require('../models/analyzedScreenshot');
 
-const uploadScreenshot = async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ success: false, message: 'No file uploaded' });
-  }
-
-  const filePath = req.file.path;
-
+const uploadScreenshot = async (req, res, next) => {
   try {
+    if (!req.file?.buffer) {
+      return res.status(400).json({ success: false, message: 'No file uploaded' });
+    }
+
     const folderName = `screenshots/${new Date().toISOString().split('T')[0]}`;
-    const compressedBuffer = await compressImage(filePath);
+
+    // 1) Compress FROM BUFFER (no disk I/O)
+    const compressedBuffer = await compressImageBuffer(req.file.buffer);
+
+    // 2) Upload to Cloudinary FROM BUFFER
     const result = await streamUpload(compressedBuffer, folderName);
-    const { data: { text } } = await tesseract.recognize(filePath, 'eng');
-    console.log('🧠 Extracted Text:', text);
-    const containsSpam = /spam/i.test(text); 
+
+    // 3) OCR on BUFFER (no file path)
+    const { data: { text } } = await tesseract.recognize(compressedBuffer, 'eng');
+    const containsSpam = /spam/i.test(text);
     const matches = text.match(/\+?[0-9][0-9\s\-()]{7,}/g);
-    const extracted = matches?.[0].trim() || 'Not Found';
-    const newAnalyzed = new AnalyzedScreenshot({
+    const extracted = matches?.[0]?.trim() || 'Not Found';
+
+    // 4) Save to DB
+    const newAnalyzed = await AnalyzedScreenshot.create({
       imageUrl: result.secure_url,
       extractedNumber: extracted,
       time: new Date(),
       toNumber: req.body.toNumber || 'Unknown',
       carrier: req.body.carrier || 'Unknown',
-      isSpam: containsSpam, // ✅ Save isSpam result
+      isSpam: containsSpam,
     });
 
-    await newAnalyzed.save();
-    fs.unlinkSync(filePath); 
-
-    res.status(201).json({
+    // 5) Respond
+    return res.status(201).json({
       success: true,
       data: {
         screenshotUrl: result.secure_url,
@@ -49,56 +48,33 @@ const uploadScreenshot = async (req, res) => {
     });
   } catch (err) {
     console.error('❌ Upload error:', err);
-    res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: err.message });
   }
 };
 
-// 🔧 Compress uploaded image under 100 KB
-async function compressImage(imagePath) {
-  const targetSize = 100 * 1024;
+async function compressImageBuffer(inputBuffer) {
+  const targetSize = 100 * 1024; 
   let quality = 80;
   let width = 1000;
-  const buffer = fs.readFileSync(imagePath);
-  let compressedBuffer = buffer;
+  let best = inputBuffer;
 
   while (width >= 200) {
-    let currentQuality = quality;
-    while (currentQuality >= 30) {
-      compressedBuffer = await sharp(buffer)
+    let q = quality;
+    while (q >= 30) {
+      const out = await sharp(inputBuffer)
         .resize({ width, withoutEnlargement: true })
-        .jpeg({ quality: currentQuality })
+        .jpeg({ quality: q })
         .toBuffer();
 
-      if (compressedBuffer.byteLength <= targetSize) {
-        return compressedBuffer;
-      }
-
-      currentQuality -= 10;
+      if (out.byteLength <= targetSize) return out;
+      best = out;
+      q -= 10;
     }
-
     width -= 100;
   }
-
-  console.warn(`⚠️ Could not compress below 100 KB. Final size: ${(compressedBuffer?.byteLength / 1024).toFixed(1)} KB`);
-  return compressedBuffer;
+  return best; // couldn't reach 100KB, return smallest tried
 }
 
-// 📤 Stream image buffer to Cloudinary
-function streamUpload(buffer, folder) {
-  return new Promise((resolve, reject) => {
-    const stream = cloudinary.uploader.upload_stream(
-      { folder },
-      (error, result) => {
-        if (result) {
-          resolve(result);
-        } else {
-          reject(error);
-        }
-      }
-    );
-    streamifier.createReadStream(buffer).pipe(stream);
-  });
-}
 const getAllAnalyzedScreenshots = async (req, res) => {
   try {
     const all = await AnalyzedScreenshot.find().sort({ analyzedAt: -1 });
