@@ -25,7 +25,6 @@ app.get('/', (req, res) => {
 app.use('/api/test', require('./routes/testRoutes'));
 app.use('/api/screenshot', require('./routes/screenshot_routes'));
 
-// Connect DB once
 (async () => {
   try { await connectDB(); }
   catch (e) { console.error('DB connect error at boot:', e?.message); }

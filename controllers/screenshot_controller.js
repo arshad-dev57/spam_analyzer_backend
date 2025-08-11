@@ -4,7 +4,6 @@ const cloudinary = require('../config/cloudinary');
 const tesseract = require('tesseract.js');
 const sharp = require('sharp');
 const streamifier = require('streamifier');
-
 const Screenshot = require('../models/screenshots');
 const AnalyzedScreenshot = require('../models/analyzedScreenshot');
 
@@ -16,40 +15,26 @@ const uploadScreenshot = async (req, res) => {
   const filePath = req.file.path;
 
   try {
-    // 📁 Cloudinary folder name by date
     const folderName = `screenshots/${new Date().toISOString().split('T')[0]}`;
-
-    // 📦 Compress image
     const compressedBuffer = await compressImage(filePath);
-
-    // ☁️ Upload to Cloudinary
     const result = await streamUpload(compressedBuffer, folderName);
-
-    // 🧠 OCR: Extract text from image
     const { data: { text } } = await tesseract.recognize(filePath, 'eng');
     console.log('🧠 Extracted Text:', text);
-
-    // 🔍 Spam keyword check
-    const containsApam = /apam/i.test(text); // isSpam = true if "apam" exists
-
-    // ☎️ Extract phone number
+    const containsSpam = /spam/i.test(text); 
     const matches = text.match(/\+?[0-9][0-9\s\-()]{7,}/g);
     const extracted = matches?.[0].trim() || 'Not Found';
-
-    // 💾 Save analyzed screenshot to MongoDB
     const newAnalyzed = new AnalyzedScreenshot({
       imageUrl: result.secure_url,
       extractedNumber: extracted,
       time: new Date(),
       toNumber: req.body.toNumber || 'Unknown',
       carrier: req.body.carrier || 'Unknown',
-      isSpam: containsApam, // ✅ Save isSpam result
+      isSpam: containsSpam, // ✅ Save isSpam result
     });
 
     await newAnalyzed.save();
-    fs.unlinkSync(filePath); // 🧹 Remove temp file
+    fs.unlinkSync(filePath); 
 
-    // ✅ Send API response
     res.status(201).json({
       success: true,
       data: {

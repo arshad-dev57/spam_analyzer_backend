@@ -4,7 +4,7 @@ const { uploadScreenshot, getAllAnalyzedScreenshots } = require('../controllers/
 
 const router = express.Router();
 
-router.post('/screenshot', upload.single('imageUrl'), uploadScreenshot);
+router.post('/postscreenshot', upload.single('imageUrl'), uploadScreenshot);
 router.get('/getanalyzed', getAllAnalyzedScreenshots);
 
 module.exports = router;
