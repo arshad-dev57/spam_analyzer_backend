@@ -188,7 +188,10 @@ const uploadScreenshot = async (req, res) => {
 };
 const getAllAnalyzedScreenshots = async (req, res) => {
   try {
-    const all = await AnalyzedScreenshot.find().sort({ time: -1 });
+    const all = await AnalyzedScreenshot
+      .find({ isDeleted: { $ne: true } })   // <-- only not-deleted
+      .sort({ time: -1 });
+
     res.status(200).json({
       success: true,
       count: all.length,
@@ -200,6 +203,7 @@ const getAllAnalyzedScreenshots = async (req, res) => {
         toNumber: item.toNumber,
         carrier: item.carrier,
         isSpam: item.isSpam,
+        isDeleted: !!item.isDeleted,        // (optional) expose for safety
       })),
     });
   } catch (err) {
@@ -209,16 +213,63 @@ const getAllAnalyzedScreenshots = async (req, res) => {
 };
 
 
-const deleteScreenshot = async (req, res) => {
-  try { 
+const softDeleteScreenshot = async (req, res) => {
+  try {
     const { id } = req.params;
-    const deleted = await AnalyzedScreenshot.findByIdAndDelete(id);
-    if (!deleted) return res.status(404).json({ success: false, error: 'Screenshot not found' });
-    res.status(200).json({ success: true, message: 'Screenshot deleted successfully', data: deleted });
+    const updated = await AnalyzedScreenshot.findByIdAndUpdate(
+      id,
+      { isDeleted: true, deletedAt: new Date() },
+      { new: true }
+    );
+    if (!updated) {
+      return res.status(404).json({ success: false, error: 'Screenshot not found' });
+    }
+    res.status(200).json({ success: true, message: 'Moved to Recently Deleted', data: updated });
   } catch (err) {
-    console.error('❌ Delete error:', err);
+    console.error('❌ Soft delete error:', err);
     res.status(500).json({ success: false, error: 'Server error' });
   }
 };
 
-module.exports = { uploadScreenshot, getAllAnalyzedScreenshots, deleteScreenshot };
+
+const getDeletedScreenshots = async (req, res) => {
+  try {
+    const deleted = await AnalyzedScreenshot.find({ isDeleted: true }).sort({ deletedAt: -1 });
+    res.status(200).json({ success: true, count: deleted.length, data: deleted });
+  } catch (err) {
+    console.error('❌ Fetch deleted error:', err);
+    res.status(500).json({ success: false, error: 'Server error' });
+  }
+};
+
+// RESTORE
+const restoreScreenshot = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updated = await AnalyzedScreenshot.findByIdAndUpdate(
+      id,
+      { isDeleted: false, deletedAt: null },
+      { new: true }
+    );
+    if (!updated) return res.status(404).json({ success: false, error: 'Screenshot not found' });
+    res.status(200).json({ success: true, message: 'Screenshot restored', data: updated });
+  } catch (err) {
+    console.error('❌ Restore error:', err);
+    res.status(500).json({ success: false, error: 'Server error' });
+  }
+};
+
+// PERMANENT DELETE
+const permanentDeleteScreenshot = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const deleted = await AnalyzedScreenshot.findByIdAndDelete(id);
+    if (!deleted) return res.status(404).json({ success: false, error: 'Screenshot not found' });
+    res.status(200).json({ success: true, message: 'Screenshot permanently deleted' });
+  } catch (err) {
+    console.error('❌ Permanent delete error:', err);
+    res.status(500).json({ success: false, error: 'Server error' });
+  }
+};
+
+module.exports = { uploadScreenshot, getAllAnalyzedScreenshots, softDeleteScreenshot, getDeletedScreenshots, restoreScreenshot, permanentDeleteScreenshot };

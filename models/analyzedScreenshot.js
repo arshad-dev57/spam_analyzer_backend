@@ -10,6 +10,8 @@ const analyzedScreenshotSchema = new mongoose.Schema({
   toNumber: { type: String, required: true },
   carrier: { type: String, required: true },
   isSpam: { type: Boolean, default: false }, // ✅ NEW FIELD
+  isDeleted: { type: Boolean, default: false },
+deletedAt: { type: Date, default: null },
 });
 
 module.exports = mongoose.model('AnalyzedScreenshot', analyzedScreenshotSchema);
