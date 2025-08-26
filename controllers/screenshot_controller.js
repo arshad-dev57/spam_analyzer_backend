@@ -7,15 +7,10 @@ const sharp = require('sharp');
 const AnalyzedScreenshot = require('../models/analyzedScreenshot');
 const streamifier = require('streamifier');
 
-// ==== CONFIG ====
-// bump timeout slightly more in prod
 const isProd = process.env.VERCEL === '1' || process.env.NODE_ENV === 'production';
 const OCR_TIMEOUT_MS = isProd ? 45_000 : 30_000;
 
-// Use local bundled tessdata to avoid remote fetch delays
 const TESS_LANG_PATH = path.join(process.cwd(), 'public', 'tessdata');
-
-// ==== Cloudinary stream upload ====
 function streamUpload(buffer, folder) {
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
@@ -26,7 +21,6 @@ function streamUpload(buffer, folder) {
   });
 }
 
-// ==== Image compression for faster upload ====
 async function compressImageBuffer(inputBuffer) {
   const targetSize = 100 * 1024; // ~100KB
   let quality = 80,
@@ -93,7 +87,6 @@ function normalizeForOCR(s) {
   ).replace(/[\W_]+/g, ''); // drop non-letters/digits
 }
 
-// ==== Robust spam detection ====
 function hasSpam(rawText) {
   if (!rawText) return false;
 
@@ -127,10 +120,6 @@ async function runOCR(buf, psm = 6) {
   console.log(`[OCR] PSM=${psm} len=${text.length} took=${Date.now()-t0}ms`);
   return text;
 }
-
-// ==== CONTROLLERS ====
-
-// POST /api/screenshot[?debug=1]
 const uploadScreenshot = async (req, res) => {
   try {
     if (!req.file?.buffer) {
@@ -184,8 +173,6 @@ const uploadScreenshot = async (req, res) => {
         isSpam: doc.isSpam,
       },
     };
-
-    // quick debug switch
     if (req.query.debug === '1') {
       payload.data.rawOCR = text;
       payload.data.normalized = normalizeForOCR(text);
@@ -221,4 +208,17 @@ const getAllAnalyzedScreenshots = async (req, res) => {
   }
 };
 
-module.exports = { uploadScreenshot, getAllAnalyzedScreenshots };
+
+const deleteScreenshot = async (req, res) => {
+  try { 
+    const { id } = req.params;
+    const deleted = await AnalyzedScreenshot.findByIdAndDelete(id);
+    if (!deleted) return res.status(404).json({ success: false, error: 'Screenshot not found' });
+    res.status(200).json({ success: true, message: 'Screenshot deleted successfully', data: deleted });
+  } catch (err) {
+    console.error('❌ Delete error:', err);
+    res.status(500).json({ success: false, error: 'Server error' });
+  }
+};
+
+module.exports = { uploadScreenshot, getAllAnalyzedScreenshots, deleteScreenshot };
