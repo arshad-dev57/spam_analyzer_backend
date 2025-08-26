@@ -1,5 +1,6 @@
 // controllers/analyzedScreenshot.controller.js
 
+const path = require('path');
 const cloudinary = require('../config/cloudinary');
 const tesseract = require('tesseract.js');
 const sharp = require('sharp');
@@ -7,8 +8,12 @@ const AnalyzedScreenshot = require('../models/analyzedScreenshot');
 const streamifier = require('streamifier');
 
 // ==== CONFIG ====
-const OCR_TIMEOUT_MS = 30_000; // bumped for reliability
-const TESS_LANG_PATH = 'https://tessdata.projectnaptha.com/4.0.0';
+// bump timeout slightly more in prod
+const isProd = process.env.VERCEL === '1' || process.env.NODE_ENV === 'production';
+const OCR_TIMEOUT_MS = isProd ? 45_000 : 30_000;
+
+// Use local bundled tessdata to avoid remote fetch delays
+const TESS_LANG_PATH = path.join(process.cwd(), 'public', 'tessdata');
 
 // ==== Cloudinary stream upload ====
 function streamUpload(buffer, folder) {
@@ -61,11 +66,11 @@ function mapConfusablesToLatin(s) {
     c: /[\u0441\u03C3\u03F2]/g, // с, σ, ϲ
     y: /[\u0443\u03C5]/g, // у, υ
     x: /[\u0445\u03C7]/g, // х, χ
-    m: /[\u043C]/g, // м
-    s: /[\u0455]/g, // ѕ
-    n: /[\u043D]/g, // н
-    b: /[\u0432]/g, // в (loose)
-    h: /[\u04BB]/g, // һ
+    m: /[\u043C]/g,       // м
+    s: /[\u0455]/g,       // ѕ
+    n: /[\u043D]/g,       // н
+    b: /[\u0432]/g,       // в
+    h: /[\u04BB]/g,       // һ
   };
   let out = s;
   for (const [lat, rx] of Object.entries(map)) out = out.replace(rx, lat);
@@ -92,18 +97,13 @@ function normalizeForOCR(s) {
 function hasSpam(rawText) {
   if (!rawText) return false;
 
-  // quick hits
   if (/\bspam\b/i.test(rawText)) return true;
   if (/\bs\s*p\s*a\s*m\b/i.test(rawText)) return true;
-
-  // OCR confusions across whitespace/newlines
   if (/\b[s\$5]\s*[pP]\s*[a@]\s*[mMnRN]\b/.test(rawText)) return true;
 
-  // normalized check (handles confusables & symbols)
   const norm = normalizeForOCR(rawText);
   if (norm.includes('spam')) return true;
 
-  // optional synonyms that might indicate spam content
   const alt = ['scam', 'junk', 'fraud'];
   if (new RegExp(`\\b(${alt.join('|')})\\b`, 'i').test(rawText)) return true;
   if (new RegExp(`(${alt.join('|')})`).test(norm)) return true;
@@ -114,15 +114,18 @@ function hasSpam(rawText) {
 // ==== OCR runner with fallback PSMs ====
 async function runOCR(buf, psm = 6) {
   const ocrInput = await sharp(buf).grayscale().normalize().toBuffer();
+  const t0 = Date.now();
   const ocrRes = await withTimeout(
     tesseract.recognize(ocrInput, 'eng', {
-      langPath: TESS_LANG_PATH,
-      tessedit_pageseg_mode: String(psm), // tesseract.js respects this key
+      langPath: TESS_LANG_PATH,              // local bundled data
+      tessedit_pageseg_mode: String(psm),    // 6=Block, 7=Single line, 3=Auto
       preserve_interword_spaces: '1',
     }),
     OCR_TIMEOUT_MS
   );
-  return (ocrRes.data.text || '').trim();
+  const text = (ocrRes.data.text || '').trim();
+  console.log(`[OCR] PSM=${psm} len=${text.length} took=${Date.now()-t0}ms`);
+  return text;
 }
 
 // ==== CONTROLLERS ====
@@ -142,13 +145,15 @@ const uploadScreenshot = async (req, res) => {
 
     // 2) OCR (original → compressed → alternate PSMs)
     let text = '';
+    let ocrErrors = [];
     try {
-      text = await runOCR(req.file.buffer, 6); // PSM 6 works well for blocks
+      text = await runOCR(req.file.buffer, 6);
       if (!text) text = await runOCR(compressedBuffer, 6);
-      if (!text) text = await runOCR(req.file.buffer, 7); // single line
-      if (!text) text = await runOCR(req.file.buffer, 3); // auto
+      if (!text) text = await runOCR(req.file.buffer, 7);
+      if (!text) text = await runOCR(req.file.buffer, 3);
     } catch (e) {
       console.warn('OCR issue:', e.message);
+      ocrErrors.push(e.message);
     }
 
     const containsSpam = hasSpam(text);
@@ -167,7 +172,6 @@ const uploadScreenshot = async (req, res) => {
       isSpam: containsSpam,
     });
 
-    // response
     const payload = {
       success: true,
       data: {
@@ -185,6 +189,8 @@ const uploadScreenshot = async (req, res) => {
     if (req.query.debug === '1') {
       payload.data.rawOCR = text;
       payload.data.normalized = normalizeForOCR(text);
+      payload.data.env = { isProd, langPath: TESS_LANG_PATH, timeoutMs: OCR_TIMEOUT_MS };
+      if (ocrErrors.length) payload.data.ocrErrors = ocrErrors;
     }
 
     return res.status(201).json(payload);
@@ -193,8 +199,6 @@ const uploadScreenshot = async (req, res) => {
     return res.status(500).json({ success: false, error: err.message });
   }
 };
-
-
 const getAllAnalyzedScreenshots = async (req, res) => {
   try {
     const all = await AnalyzedScreenshot.find().sort({ time: -1 });
