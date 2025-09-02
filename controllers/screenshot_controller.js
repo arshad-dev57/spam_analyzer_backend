@@ -120,6 +120,8 @@ async function runOCR(buf, psm = 6) {
   console.log(`[OCR] PSM=${psm} len=${text.length} took=${Date.now()-t0}ms`);
   return text;
 }
+
+
 const uploadScreenshot = async (req, res) => {
   try {
     if (!req.file?.buffer) {

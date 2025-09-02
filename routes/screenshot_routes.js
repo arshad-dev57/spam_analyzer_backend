@@ -4,7 +4,7 @@ const { uploadScreenshot, getAllAnalyzedScreenshots, softDeleteScreenshot, getDe
 
 const router = express.Router();
 
-router.post('/postscreenshot', upload.single('imageUrl'), uploadScreenshot);
+router.post('/postscreenshot', upload.single('image'), uploadScreenshot);
 router.get('/getanalyzed', getAllAnalyzedScreenshots);
 router.delete('/delete/:id', softDeleteScreenshot); // soft delete
 router.get('/recently-deleted', getDeletedScreenshots); // recently deleted list

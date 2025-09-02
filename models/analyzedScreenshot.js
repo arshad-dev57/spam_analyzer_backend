@@ -9,7 +9,7 @@ const analyzedScreenshotSchema = new mongoose.Schema({
   time: { type: Date, required: true },
   toNumber: { type: String, required: true },
   carrier: { type: String, required: true },
-  isSpam: { type: Boolean, default: false }, // ✅ NEW FIELD
+  isSpam: { type: Boolean, default: false }, 
   isDeleted: { type: Boolean, default: false },
 deletedAt: { type: Date, default: null },
 });
