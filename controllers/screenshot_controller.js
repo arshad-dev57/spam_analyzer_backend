@@ -120,22 +120,25 @@ async function runOCR(buf, psm = 6) {
   console.log(`[OCR] PSM=${psm} len=${text.length} took=${Date.now()-t0}ms`);
   return text;
 }
-
-
 const uploadScreenshot = async (req, res) => {
   try {
+    // ensure auth applied
+    if (!req.user?.id) {
+      return res.status(401).json({ success: false, message: "Auth required" });
+    }
     if (!req.file?.buffer) {
-      return res.status(400).json({ success: false, message: 'No file uploaded' });
+      return res.status(400).json({ success: false, message: "No file uploaded" });
     }
 
-    const folderName = `screenshots/${new Date().toISOString().split('T')[0]}`;
+    const today = new Date().toISOString().split("T")[0];
+    const folderName = `screenshots/${req.user.id}/${today}`; // << user-specific folder
 
-    // 1) Upload compressed (network-friendly)
+    // 1) Upload compressed
     const compressedBuffer = await compressImageBuffer(req.file.buffer);
     const uploadResult = await streamUpload(compressedBuffer, folderName);
 
-    // 2) OCR (original → compressed → alternate PSMs)
-    let text = '';
+    // 2) OCR attempts
+    let text = "";
     let ocrErrors = [];
     try {
       text = await runOCR(req.file.buffer, 6);
@@ -143,39 +146,41 @@ const uploadScreenshot = async (req, res) => {
       if (!text) text = await runOCR(req.file.buffer, 7);
       if (!text) text = await runOCR(req.file.buffer, 3);
     } catch (e) {
-      console.warn('OCR issue:', e.message);
+      console.warn("OCR issue:", e.message);
       ocrErrors.push(e.message);
     }
 
     const containsSpam = hasSpam(text);
 
-    // phone number extraction
-    const matches = text.match(/\+?[0-9][0-9\s\-()]{7,}/g);
-    const extracted = matches?.[0]?.replace(/\s+/g, ' ').trim() || 'Not Found';
+    // phone extraction
+    const matches = text?.match(/\+?[0-9][0-9\s\-()]{7,}/g);
+    const extracted = matches?.[0]?.replace(/\s+/g, " ").trim() || "Not Found";
 
-    // store
+    // 3) SAVE with user
     const doc = await AnalyzedScreenshot.create({
+      user: req.user.id,                        // << per-user ownership
       imageUrl: uploadResult.secure_url,
       extractedNumber: extracted,
       time: new Date(),
-      toNumber: req.body.toNumber || 'Unknown',
-      carrier: req.body.carrier || 'Unknown',
+      toNumber: req.body.toNumber || "Unknown",
+      carrier: req.body.carrier || "Unknown",
       isSpam: containsSpam,
     });
 
     const payload = {
       success: true,
       data: {
+        id: doc._id,
         screenshotUrl: uploadResult.secure_url,
         extractedNumber: extracted,
-        id: doc._id,
         time: doc.time,
         toNumber: doc.toNumber,
         carrier: doc.carrier,
         isSpam: doc.isSpam,
       },
     };
-    if (req.query.debug === '1') {
+
+    if (req.query.debug === "1") {
       payload.data.rawOCR = text;
       payload.data.normalized = normalizeForOCR(text);
       payload.data.env = { isProd, langPath: TESS_LANG_PATH, timeoutMs: OCR_TIMEOUT_MS };
@@ -184,10 +189,12 @@ const uploadScreenshot = async (req, res) => {
 
     return res.status(201).json(payload);
   } catch (err) {
-    console.error('❌ Upload error:', err);
+    console.error("❌ Upload error:", err);
     return res.status(500).json({ success: false, error: err.message });
   }
 };
+
+
 const getAllAnalyzedScreenshots = async (req, res) => {
   try {
     const all = await AnalyzedScreenshot
@@ -214,6 +221,51 @@ const getAllAnalyzedScreenshots = async (req, res) => {
   }
 };
 
+
+
+const getlogginscreenshot = async (req, res) => {
+  try {
+    if (!req.user?.id) {
+      return res.status(401).json({ success: false, message: "Auth required" });
+    }
+
+    // optional: pagination (defaults)
+    const page  = Math.max(parseInt(req.query.page || "1", 10), 1);
+    const limit = Math.max(parseInt(req.query.limit || "20", 10), 1);
+    const skip  = (page - 1) * limit;
+
+    const filter = { user: req.user.id, isDeleted: { $ne: true } };
+
+    const [items, total] = await Promise.all([
+      AnalyzedScreenshot.find(filter)
+        .sort({ time: -1, _id: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      AnalyzedScreenshot.countDocuments(filter),
+    ]);
+
+    return res.status(200).json({
+      success: true,
+      page,
+      limit,
+      total,
+      data: items.map((item) => ({
+        id: item._id,
+        screenshotUrl: item.imageUrl,
+        extractedNumber: item.extractedNumber,
+        time: item.time,
+        toNumber: item.toNumber,
+        carrier: item.carrier,
+        isSpam: item.isSpam,
+        isDeleted: !!item.isDeleted,
+      })),
+    });
+  } catch (err) {
+    console.error("❌ Fetch error:", err);
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+};
 
 const softDeleteScreenshot = async (req, res) => {
   try {
@@ -274,4 +326,4 @@ const permanentDeleteScreenshot = async (req, res) => {
   }
 };
 
-module.exports = { uploadScreenshot, getAllAnalyzedScreenshots, softDeleteScreenshot, getDeletedScreenshots, restoreScreenshot, permanentDeleteScreenshot };
+module.exports = { uploadScreenshot, getAllAnalyzedScreenshots, softDeleteScreenshot, getDeletedScreenshots, restoreScreenshot, permanentDeleteScreenshot,getlogginscreenshot };

@@ -24,6 +24,7 @@ app.get('/', (req, res) => {
 // Routes
 app.use('/api/test', require('./routes/testRoutes'));
 app.use('/api/screenshot', require('./routes/screenshot_routes'));
+app.use('/api/user', require('./routes/auth_routes'));
 app.use('/api', require('./routes/ping_routes'));
 (async () => {
   try { await connectDB(); }
