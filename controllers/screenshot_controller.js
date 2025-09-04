@@ -120,6 +120,9 @@ async function runOCR(buf, psm = 6) {
   console.log(`[OCR] PSM=${psm} len=${text.length} took=${Date.now()-t0}ms`);
   return text;
 }
+
+
+
 const uploadScreenshot = async (req, res) => {
   try {
     // ensure auth applied
@@ -158,7 +161,8 @@ const uploadScreenshot = async (req, res) => {
 
     // 3) SAVE with user
     const doc = await AnalyzedScreenshot.create({
-      user: req.user.id,                        // << per-user ownership
+      user: req.user.id,      
+      email: req.user.email,                  // << per-user ownership
       imageUrl: uploadResult.secure_url,
       extractedNumber: extracted,
       time: new Date(),
@@ -220,7 +224,40 @@ const getAllAnalyzedScreenshots = async (req, res) => {
     res.status(500).json({ success: false, error: 'Server error' });
   }
 };
+const getallfilteredscreenshots = async (req, res) => {
+  try {
+    const userEmail = req.query.email || req.user.email; 
 
+    if (!userEmail) {
+      return res.status(400).json({ success: false, error: 'Email is required' });
+    }
+
+    const all = await AnalyzedScreenshot
+      .find({
+        email: userEmail,  
+        isDeleted: { $ne: true }  
+      })
+      .sort({ time: -1 });
+
+    res.status(200).json({
+      success: true,
+      count: all.length,
+      data: all.map(item => ({
+        screenshotUrl: item.imageUrl,
+        extractedNumber: item.extractedNumber,
+        id: item._id,
+        time: item.time,
+        toNumber: item.toNumber,
+        carrier: item.carrier,
+        isSpam: item.isSpam,
+        isDeleted: !!item.isDeleted,  // (optional) expose for safety
+      })),
+    });
+  } catch (err) {
+    console.error('❌ Fetch error:', err);
+    res.status(500).json({ success: false, error: 'Server error' });
+  }
+};
 
 
 const getlogginscreenshot = async (req, res) => {
@@ -326,4 +363,4 @@ const permanentDeleteScreenshot = async (req, res) => {
   }
 };
 
-module.exports = { uploadScreenshot, getAllAnalyzedScreenshots, softDeleteScreenshot, getDeletedScreenshots, restoreScreenshot, permanentDeleteScreenshot,getlogginscreenshot };
+module.exports = { uploadScreenshot, getAllAnalyzedScreenshots, softDeleteScreenshot, getDeletedScreenshots, restoreScreenshot, permanentDeleteScreenshot,getlogginscreenshot,getallfilteredscreenshots };
