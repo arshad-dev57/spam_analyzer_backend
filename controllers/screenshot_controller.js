@@ -1,5 +1,4 @@
 // controllers/analyzedScreenshot.controller.js
-
 const path = require('path');
 const cloudinary = require('../config/cloudinary');
 const tesseract = require('tesseract.js');
@@ -7,10 +6,14 @@ const sharp = require('sharp');
 const AnalyzedScreenshot = require('../models/analyzedScreenshot');
 const streamifier = require('streamifier');
 
+// 🔔 Realtime
+const { getIO, Rooms, Events } = require('../config/socket');
+
 const isProd = process.env.VERCEL === '1' || process.env.NODE_ENV === 'production';
 const OCR_TIMEOUT_MS = isProd ? 45_000 : 30_000;
 
 const TESS_LANG_PATH = path.join(process.cwd(), 'public', 'tessdata');
+
 function streamUpload(buffer, folder) {
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
@@ -23,9 +26,7 @@ function streamUpload(buffer, folder) {
 
 async function compressImageBuffer(inputBuffer) {
   const targetSize = 100 * 1024; // ~100KB
-  let quality = 80,
-    width = 1000,
-    best = inputBuffer;
+  let quality = 80, width = 1000, best = inputBuffer;
 
   while (width >= 200) {
     for (let q = quality; q >= 30; q -= 10) {
@@ -49,47 +50,45 @@ function withTimeout(promise, ms) {
   ]);
 }
 
-// ==== Confusable → Latin mapping (Cyrillic/Greek lookalikes) ====
+// ==== Confusable → Latin mapping ====
 function mapConfusablesToLatin(s) {
   const map = {
-    a: /[\u0430\u03B1]/g, // Cyrillic а, Greek α
-    e: /[\u0435\u03B5]/g, // е, ε
-    i: /[\u0456\u03B9]/g, // і, ι
-    o: /[\u043E\u03BF]/g, // о, ο
-    p: /[\u0440\u03C1]/g, // р, ρ
-    c: /[\u0441\u03C3\u03F2]/g, // с, σ, ϲ
-    y: /[\u0443\u03C5]/g, // у, υ
-    x: /[\u0445\u03C7]/g, // х, χ
-    m: /[\u043C]/g,       // м
-    s: /[\u0455]/g,       // ѕ
-    n: /[\u043D]/g,       // н
-    b: /[\u0432]/g,       // в
-    h: /[\u04BB]/g,       // һ
+    a: /[\u0430\u03B1]/g,
+    e: /[\u0435\u03B5]/g,
+    i: /[\u0456\u03B9]/g,
+    o: /[\u043E\u03BF]/g,
+    p: /[\u0440\u03C1]/g,
+    c: /[\u0441\u03C3\u03F2]/g,
+    y: /[\u0443\u03C5]/g,
+    x: /[\u0445\u03C7]/g,
+    m: /[\u043C]/g,
+    s: /[\u0455]/g,
+    n: /[\u043D]/g,
+    b: /[\u0432]/g,
+    h: /[\u04BB]/g,
   };
   let out = s;
   for (const [lat, rx] of Object.entries(map)) out = out.replace(rx, lat);
   return out;
 }
 
-// ==== Normalization for OCR noise & lookalikes ====
 function normalizeForOCR(s) {
   return mapConfusablesToLatin(
     s
       .toLowerCase()
       .normalize('NFKD')
-      .replace(/[\u0300-\u036f]/g, '') // strip accents
-      .replace(/rn/g, 'm') // rn -> m
-      .replace(/\$/g, 's') // $ -> s
-      .replace(/5/g, 's') // 5 -> s
-      .replace(/@/g, 'a') // @ -> a
-      .replace(/0/g, 'o') // 0 -> o
-      .replace(/[|!]/g, 'l') // |/! -> l
-  ).replace(/[\W_]+/g, ''); // drop non-letters/digits
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/rn/g, 'm')
+      .replace(/\$/g, 's')
+      .replace(/5/g, 's')
+      .replace(/@/g, 'a')
+      .replace(/0/g, 'o')
+      .replace(/[|!]/g, 'l')
+  ).replace(/[\W_]+/g, '');
 }
 
 function hasSpam(rawText) {
   if (!rawText) return false;
-
   if (/\bspam\b/i.test(rawText)) return true;
   if (/\bs\s*p\s*a\s*m\b/i.test(rawText)) return true;
   if (/\b[s\$5]\s*[pP]\s*[a@]\s*[mMnRN]\b/.test(rawText)) return true;
@@ -104,14 +103,13 @@ function hasSpam(rawText) {
   return false;
 }
 
-// ==== OCR runner with fallback PSMs ====
 async function runOCR(buf, psm = 6) {
   const ocrInput = await sharp(buf).grayscale().normalize().toBuffer();
   const t0 = Date.now();
   const ocrRes = await withTimeout(
     tesseract.recognize(ocrInput, 'eng', {
-      langPath: TESS_LANG_PATH,              // local bundled data
-      tessedit_pageseg_mode: String(psm),    // 6=Block, 7=Single line, 3=Auto
+      langPath: TESS_LANG_PATH,
+      tessedit_pageseg_mode: String(psm),
       preserve_interword_spaces: '1',
     }),
     OCR_TIMEOUT_MS
@@ -121,35 +119,63 @@ async function runOCR(buf, psm = 6) {
   return text;
 }
 
+/** 🔔 common payload shaper (what CMS needs) */
+function shape(item) {
+  return {
+    id: item._id,
+    user: item.user,
+    name: item.name,
+    email: item.email,
+    screenshotUrl: item.imageUrl,
+    extractedNumber: item.extractedNumber,
+    time: item.time,
+    toNumber: item.toNumber,
+    carrier: item.carrier,
+    isSpam: item.isSpam,
+    isDeleted: !!item.isDeleted,
+  };
+}
+
+/** 🔔 broadcast helper */
+function emitScreenshotEvent(kind, docOrObj) {
+  try {
+    const io = getIO();
+    const data = docOrObj._id ? shape(docOrObj) : docOrObj;
+
+    // global (all listeners)
+    io.to(Rooms.all).emit(kind, data);
+    // per-user & per-email channels for targeted UIs
+    if (data.user) io.to(Rooms.user(String(data.user))).emit(kind, data);
+    if (data.email) io.to(Rooms.email(String(data.email))).emit(kind, data);
+    // admins dashboard
+    io.to(Rooms.admins).emit(kind, data);
+  } catch (e) {
+    // If socket not initialized (e.g., serverless), don't crash the request
+    console.warn('WS emit skipped:', e.message);
+  }
+}
+
 const uploadScreenshot = async (req, res) => {
   try {
-    // Ensure auth is applied and user exists
     if (!req.user?.id) {
       return res.status(401).json({ success: false, message: "Auth required" });
     }
-
-    // Ensure user email and name are present
     if (!req.user?.email) {
       return res.status(400).json({ success: false, message: "Email is required" });
     }
     if (!req.user?.name) {
       return res.status(400).json({ success: false, message: "Name is required" });
     }
-
-    // Ensure file is uploaded
     if (!req.file?.buffer) {
       return res.status(400).json({ success: false, message: "No file uploaded" });
     }
 
-    // Proceed with processing the file
     const today = new Date().toISOString().split("T")[0];
-    const folderName = `screenshots/${req.user.id}/${today}`; // user-specific folder
+    const folderName = `screenshots/${req.user.id}/${today}`;
 
-    // 1) Upload compressed image
     const compressedBuffer = await compressImageBuffer(req.file.buffer);
     const uploadResult = await streamUpload(compressedBuffer, folderName);
 
-    // 2) OCR attempts
     let text = "";
     let ocrErrors = [];
     try {
@@ -164,15 +190,13 @@ const uploadScreenshot = async (req, res) => {
 
     const containsSpam = hasSpam(text);
 
-    // Phone extraction
     const matches = text?.match(/\+?[0-9][0-9\s\-()]{7,}/g);
     const extracted = matches?.[0]?.replace(/\s+/g, " ").trim() || "Not Found";
 
-    // 3) Save with user and email
     const doc = await AnalyzedScreenshot.create({
-      user: req.user.id,                        // per-user ownership
-      name: req.user.name,                       // Save the user's name here
-      email: req.user.email,                     // Save the user's email here
+      user: req.user.id,
+      name: req.user.name,
+      email: req.user.email,
       imageUrl: uploadResult.secure_url,
       extractedNumber: extracted,
       time: new Date(),
@@ -181,14 +205,13 @@ const uploadScreenshot = async (req, res) => {
       isSpam: containsSpam,
     });
 
-    // Response payload with name and email added
     const payload = {
       success: true,
       data: {
         id: doc._id,
         user: doc.user,
-        name: doc.name,  // Include name from the saved document
-        email: doc.email, // Include email from the saved document
+        name: doc.name,
+        email: doc.email,
         screenshotUrl: uploadResult.secure_url,
         extractedNumber: extracted,
         time: doc.time,
@@ -197,6 +220,9 @@ const uploadScreenshot = async (req, res) => {
         isSpam: doc.isSpam,
       },
     };
+
+    // 🔔 realtime push (no refresh)
+    emitScreenshotEvent(Events.NEW, doc);
 
     if (req.query.debug === "1") {
       payload.data.rawOCR = text;
@@ -212,11 +238,10 @@ const uploadScreenshot = async (req, res) => {
   }
 };
 
-
 const getAllAnalyzedScreenshots = async (req, res) => {
   try {
     const all = await AnalyzedScreenshot
-      .find({ isDeleted: { $ne: true } })   // <-- only not-deleted
+      .find({ isDeleted: { $ne: true } })
       .sort({ time: -1 });
 
     res.status(200).json({
@@ -230,7 +255,7 @@ const getAllAnalyzedScreenshots = async (req, res) => {
         toNumber: item.toNumber,
         carrier: item.carrier,
         isSpam: item.isSpam,
-        isDeleted: !!item.isDeleted,        // (optional) expose for safety
+        isDeleted: !!item.isDeleted,
       })),
     });
   } catch (err) {
@@ -239,21 +264,15 @@ const getAllAnalyzedScreenshots = async (req, res) => {
   }
 };
 
-
-
 const getallfilteredscreenshots = async (req, res) => {
   try {
-    const userEmail = req.query.email || req.user.email; 
-
+    const userEmail = req.query.email || req.user.email;
     if (!userEmail) {
       return res.status(400).json({ success: false, error: 'Email is required' });
     }
 
     const all = await AnalyzedScreenshot
-      .find({
-        email: userEmail,  
-        isDeleted: { $ne: true }  
-      })
+      .find({ email: userEmail, isDeleted: { $ne: true } })
       .sort({ time: -1 });
 
     res.status(200).json({
@@ -269,7 +288,7 @@ const getallfilteredscreenshots = async (req, res) => {
         toNumber: item.toNumber,
         carrier: item.carrier,
         isSpam: item.isSpam,
-        isDeleted: !!item.isDeleted,  // (optional) expose for safety
+        isDeleted: !!item.isDeleted,
       })),
     });
   } catch (err) {
@@ -278,20 +297,15 @@ const getallfilteredscreenshots = async (req, res) => {
   }
 };
 
-
 const getallnamedfilterscreenshots = async (req, res) => {
   try {
-    const userName = req.query.name || req.user.name; 
-
+    const userName = req.query.name || req.user.name;
     if (!userName) {
       return res.status(400).json({ success: false, error: 'Name is required' });
     }
 
     const all = await AnalyzedScreenshot
-      .find({
-        name: userName,  
-        isDeleted: { $ne: true }  
-      })
+      .find({ name: userName, isDeleted: { $ne: true } })
       .sort({ time: -1 });
 
     res.status(200).json({
@@ -308,7 +322,7 @@ const getallnamedfilterscreenshots = async (req, res) => {
         toNumber: item.toNumber,
         carrier: item.carrier,
         isSpam: item.isSpam,
-        isDeleted: !!item.isDeleted,  // (optional) expose for safety
+        isDeleted: !!item.isDeleted,
       })),
     });
   } catch (err) {
@@ -316,8 +330,6 @@ const getallnamedfilterscreenshots = async (req, res) => {
     res.status(500).json({ success: false, error: 'Server error' });
   }
 };
-
-
 
 const getlogginscreenshot = async (req, res) => {
   try {
@@ -372,13 +384,16 @@ const softDeleteScreenshot = async (req, res) => {
     if (!updated) {
       return res.status(404).json({ success: false, error: 'Screenshot not found' });
     }
+
+    // 🔔 realtime
+    emitScreenshotEvent(Events.DELETE_SOFT, { id, user: updated.user, email: updated.email });
+
     res.status(200).json({ success: true, message: 'Moved to Recently Deleted', data: updated });
   } catch (err) {
     console.error('❌ Soft delete error:', err);
     res.status(500).json({ success: false, error: 'Server error' });
   }
 };
-
 
 const getDeletedScreenshots = async (req, res) => {
   try {
@@ -390,7 +405,6 @@ const getDeletedScreenshots = async (req, res) => {
   }
 };
 
-// RESTORE
 const restoreScreenshot = async (req, res) => {
   try {
     const { id } = req.params;
@@ -400,6 +414,10 @@ const restoreScreenshot = async (req, res) => {
       { new: true }
     );
     if (!updated) return res.status(404).json({ success: false, error: 'Screenshot not found' });
+
+    // 🔔 realtime
+    emitScreenshotEvent(Events.UPDATE, updated);
+
     res.status(200).json({ success: true, message: 'Screenshot restored', data: updated });
   } catch (err) {
     console.error('❌ Restore error:', err);
@@ -407,12 +425,15 @@ const restoreScreenshot = async (req, res) => {
   }
 };
 
-// PERMANENT DELETE
 const permanentDeleteScreenshot = async (req, res) => {
   try {
     const { id } = req.params;
     const deleted = await AnalyzedScreenshot.findByIdAndDelete(id);
     if (!deleted) return res.status(404).json({ success: false, error: 'Screenshot not found' });
+
+    // 🔔 realtime
+    emitScreenshotEvent(Events.DELETE_PERM, { id, user: deleted.user, email: deleted.email });
+
     res.status(200).json({ success: true, message: 'Screenshot permanently deleted' });
   } catch (err) {
     console.error('❌ Permanent delete error:', err);
@@ -420,4 +441,14 @@ const permanentDeleteScreenshot = async (req, res) => {
   }
 };
 
-module.exports = { uploadScreenshot, getAllAnalyzedScreenshots, softDeleteScreenshot, getDeletedScreenshots, restoreScreenshot, permanentDeleteScreenshot,getlogginscreenshot,getallfilteredscreenshots,getallnamedfilterscreenshots };
+module.exports = {
+  uploadScreenshot,
+  getAllAnalyzedScreenshots,
+  softDeleteScreenshot,
+  getDeletedScreenshots,
+  restoreScreenshot,
+  permanentDeleteScreenshot,
+  getlogginscreenshot,
+  getallfilteredscreenshots,
+  getallnamedfilterscreenshots
+};
