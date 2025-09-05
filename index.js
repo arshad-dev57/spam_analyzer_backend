@@ -47,6 +47,6 @@ if (require.main === module && !process.env.VERCEL) {
             console.error('[AutoPing] Failed:', err.message);
         }
     }, 15 * 60 * 1000); // 10 minutes
-    ///////////////////////////
+    
   });
 }

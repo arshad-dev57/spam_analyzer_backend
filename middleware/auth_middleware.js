@@ -1,4 +1,3 @@
-// Authorization: Bearer <token>
 const jwt = require("jsonwebtoken");
 
 module.exports = function authMiddleware(req, res, next) {
@@ -8,7 +7,10 @@ module.exports = function authMiddleware(req, res, next) {
     if (!token) return res.status(401).json({ message: "No token provided" });
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = { id: decoded.id };
+
+    // Attach both id and email to req.user (both at top level)
+    req.user = { id: decoded.id, email: decoded.email, name: decoded.name };  // `email` and `id` are directly available
+
     next();
   } catch (err) {
     return res.status(401).json({ message: "Invalid token" });

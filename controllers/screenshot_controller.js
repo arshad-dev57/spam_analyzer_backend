@@ -121,22 +121,31 @@ async function runOCR(buf, psm = 6) {
   return text;
 }
 
-
-
 const uploadScreenshot = async (req, res) => {
   try {
-    // ensure auth applied
+    // Ensure auth is applied and user exists
     if (!req.user?.id) {
       return res.status(401).json({ success: false, message: "Auth required" });
     }
+
+    // Ensure user email and name are present
+    if (!req.user?.email) {
+      return res.status(400).json({ success: false, message: "Email is required" });
+    }
+    if (!req.user?.name) {
+      return res.status(400).json({ success: false, message: "Name is required" });
+    }
+
+    // Ensure file is uploaded
     if (!req.file?.buffer) {
       return res.status(400).json({ success: false, message: "No file uploaded" });
     }
 
+    // Proceed with processing the file
     const today = new Date().toISOString().split("T")[0];
-    const folderName = `screenshots/${req.user.id}/${today}`; // << user-specific folder
+    const folderName = `screenshots/${req.user.id}/${today}`; // user-specific folder
 
-    // 1) Upload compressed
+    // 1) Upload compressed image
     const compressedBuffer = await compressImageBuffer(req.file.buffer);
     const uploadResult = await streamUpload(compressedBuffer, folderName);
 
@@ -155,14 +164,15 @@ const uploadScreenshot = async (req, res) => {
 
     const containsSpam = hasSpam(text);
 
-    // phone extraction
+    // Phone extraction
     const matches = text?.match(/\+?[0-9][0-9\s\-()]{7,}/g);
     const extracted = matches?.[0]?.replace(/\s+/g, " ").trim() || "Not Found";
 
-    // 3) SAVE with user
+    // 3) Save with user and email
     const doc = await AnalyzedScreenshot.create({
-      user: req.user.id,      
-      email: req.user.email,                  // << per-user ownership
+      user: req.user.id,                        // per-user ownership
+      name: req.user.name,                       // Save the user's name here
+      email: req.user.email,                     // Save the user's email here
       imageUrl: uploadResult.secure_url,
       extractedNumber: extracted,
       time: new Date(),
@@ -171,10 +181,14 @@ const uploadScreenshot = async (req, res) => {
       isSpam: containsSpam,
     });
 
+    // Response payload with name and email added
     const payload = {
       success: true,
       data: {
         id: doc._id,
+        user: doc.user,
+        name: doc.name,  // Include name from the saved document
+        email: doc.email, // Include email from the saved document
         screenshotUrl: uploadResult.secure_url,
         extractedNumber: extracted,
         time: doc.time,
@@ -224,6 +238,9 @@ const getAllAnalyzedScreenshots = async (req, res) => {
     res.status(500).json({ success: false, error: 'Server error' });
   }
 };
+
+
+
 const getallfilteredscreenshots = async (req, res) => {
   try {
     const userEmail = req.query.email || req.user.email; 
@@ -243,6 +260,8 @@ const getallfilteredscreenshots = async (req, res) => {
       success: true,
       count: all.length,
       data: all.map(item => ({
+        user: item.user,
+        email: item.email,
         screenshotUrl: item.imageUrl,
         extractedNumber: item.extractedNumber,
         id: item._id,
@@ -260,13 +279,51 @@ const getallfilteredscreenshots = async (req, res) => {
 };
 
 
+const getallnamedfilterscreenshots = async (req, res) => {
+  try {
+    const userName = req.query.name || req.user.name; 
+
+    if (!userName) {
+      return res.status(400).json({ success: false, error: 'Name is required' });
+    }
+
+    const all = await AnalyzedScreenshot
+      .find({
+        name: userName,  
+        isDeleted: { $ne: true }  
+      })
+      .sort({ time: -1 });
+
+    res.status(200).json({
+      success: true,
+      count: all.length,
+      data: all.map(item => ({
+        user: item.user,
+        name: item.name,
+        email: item.email,
+        screenshotUrl: item.imageUrl,
+        extractedNumber: item.extractedNumber,
+        id: item._id,
+        time: item.time,
+        toNumber: item.toNumber,
+        carrier: item.carrier,
+        isSpam: item.isSpam,
+        isDeleted: !!item.isDeleted,  // (optional) expose for safety
+      })),
+    });
+  } catch (err) {
+    console.error('❌ Fetch error:', err);
+    res.status(500).json({ success: false, error: 'Server error' });
+  }
+};
+
+
+
 const getlogginscreenshot = async (req, res) => {
   try {
     if (!req.user?.id) {
       return res.status(401).json({ success: false, message: "Auth required" });
     }
-
-    // optional: pagination (defaults)
     const page  = Math.max(parseInt(req.query.page || "1", 10), 1);
     const limit = Math.max(parseInt(req.query.limit || "20", 10), 1);
     const skip  = (page - 1) * limit;
@@ -363,4 +420,4 @@ const permanentDeleteScreenshot = async (req, res) => {
   }
 };
 
-module.exports = { uploadScreenshot, getAllAnalyzedScreenshots, softDeleteScreenshot, getDeletedScreenshots, restoreScreenshot, permanentDeleteScreenshot,getlogginscreenshot,getallfilteredscreenshots };
+module.exports = { uploadScreenshot, getAllAnalyzedScreenshots, softDeleteScreenshot, getDeletedScreenshots, restoreScreenshot, permanentDeleteScreenshot,getlogginscreenshot,getallfilteredscreenshots,getallnamedfilterscreenshots };

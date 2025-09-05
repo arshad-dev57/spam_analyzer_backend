@@ -10,6 +10,8 @@ const analyzedScreenshotSchema = new mongoose.Schema(
       index: true,
     },
 
+    email: { type: String, required: true },  // <-- Add the email field here
+   name: { type: String, required: true },
     imageUrl: { type: String, required: true },
     extractedNumber: { type: String, required: true },
     analyzedAt: { type: Date, default: Date.now },
@@ -22,5 +24,7 @@ const analyzedScreenshotSchema = new mongoose.Schema(
   },
   { versionKey: false }
 );
+
 analyzedScreenshotSchema.index({ user: 1, isDeleted: 1, time: -1 });
+
 module.exports = mongoose.model('AnalyzedScreenshot', analyzedScreenshotSchema);
