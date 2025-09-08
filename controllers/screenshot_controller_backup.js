@@ -216,7 +216,7 @@ const uploadScreenshot = async (req, res) => {
 const getAllAnalyzedScreenshots = async (req, res) => {
   try {
     const all = await AnalyzedScreenshot
-      .find({ isDeleted: { $ne: true } })   // <-- only not-deleted
+      .find({ isDeleted: { $ne: true } }) 
       .sort({ time: -1 });
 
     res.status(200).json({
@@ -230,7 +230,7 @@ const getAllAnalyzedScreenshots = async (req, res) => {
         toNumber: item.toNumber,
         carrier: item.carrier,
         isSpam: item.isSpam,
-        isDeleted: !!item.isDeleted,        // (optional) expose for safety
+        isDeleted: !!item.isDeleted,       
       })),
     });
   } catch (err) {
@@ -269,7 +269,7 @@ const getallfilteredscreenshots = async (req, res) => {
         toNumber: item.toNumber,
         carrier: item.carrier,
         isSpam: item.isSpam,
-        isDeleted: !!item.isDeleted,  // (optional) expose for safety
+        isDeleted: !!item.isDeleted,  
       })),
     });
   } catch (err) {
@@ -308,7 +308,7 @@ const getallnamedfilterscreenshots = async (req, res) => {
         toNumber: item.toNumber,
         carrier: item.carrier,
         isSpam: item.isSpam,
-        isDeleted: !!item.isDeleted,  // (optional) expose for safety
+        isDeleted: !!item.isDeleted,  
       })),
     });
   } catch (err) {
@@ -390,7 +390,6 @@ const getDeletedScreenshots = async (req, res) => {
   }
 };
 
-// RESTORE
 const restoreScreenshot = async (req, res) => {
   try {
     const { id } = req.params;
@@ -407,7 +406,6 @@ const restoreScreenshot = async (req, res) => {
   }
 };
 
-// PERMANENT DELETE
 const permanentDeleteScreenshot = async (req, res) => {
   try {
     const { id } = req.params;
