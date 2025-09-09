@@ -6,7 +6,6 @@ const sharp = require('sharp');
 const AnalyzedScreenshot = require('../models/analyzedScreenshot');
 const streamifier = require('streamifier');
 
-// 🔔 Realtime
 const { getIO, Rooms, Events } = require('../config/socket');
 
 const isProd = process.env.VERCEL === '1' || process.env.NODE_ENV === 'production';
@@ -42,7 +41,6 @@ async function compressImageBuffer(inputBuffer) {
   return best;
 }
 
-// ==== Promise timeout helper ====
 function withTimeout(promise, ms) {
   return Promise.race([
     promise,
@@ -50,7 +48,6 @@ function withTimeout(promise, ms) {
   ]);
 }
 
-// ==== Confusable → Latin mapping ====
 function mapConfusablesToLatin(s) {
   const map = {
     a: /[\u0430\u03B1]/g,
@@ -89,16 +86,38 @@ function normalizeForOCR(s) {
 
 function hasSpam(rawText) {
   if (!rawText) return false;
-  if (/\bspam\b/i.test(rawText)) return true;
-  if (/\bs\s*p\s*a\s*m\b/i.test(rawText)) return true;
-  if (/\b[s\$5]\s*[pP]\s*[a@]\s*[mMnRN]\b/.test(rawText)) return true;
 
-  const norm = normalizeForOCR(rawText);
-  if (norm.includes('spam')) return true;
+  // 1) Exact word "Spam" (capital S, case-sensitive)
+  if (/\bSpam\b/.test(rawText)) return true;
 
+  // 2) "S p a m" style (S capital, darmiyan me spaces/punct bhi chaley)
+  if (/\bS\W*p\W*a\W*m\b/.test(rawText)) return true;
+
+  // 3) Obfuscation: last letter m ya OCR ka "rn" etc — lekin S capital hi rahe
+  if (/\bS\W*p\W*a\W*(?:m|rn|Rn|rN|RN)\b/.test(rawText)) return true;
+
+  // 4) Case-preserving normalization (no .toLowerCase()), non-word chars hata kar "Spam" dhoondho
+  const normalizedCase = mapConfusablesToLatin(
+    rawText
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/rn/g, 'm')   // OCR fix
+      .replace(/\$/g, 's')
+      .replace(/5/g, 's')
+      .replace(/@/g, 'a')
+      .replace(/0/g, 'o')
+      .replace(/[|!]/g, 'l')
+  ).replace(/[\W_]+/g, '');
+
+  if (normalizedCase.includes('Spam')) return true;
+
+  // 5) (Optional) Related keywords — yeh abhi case-insensitive rehen ge
   const alt = ['scam', 'junk', 'fraud'];
   if (new RegExp(`\\b(${alt.join('|')})\\b`, 'i').test(rawText)) return true;
-  if (new RegExp(`(${alt.join('|')})`).test(norm)) return true;
+
+  // Lowercased OCR-normalized text par bhi alt check
+  const normLower = normalizeForOCR(rawText); // yeh aapki existing function hai (lowercase karti hai)
+  if (new RegExp(`(${alt.join('|')})`).test(normLower)) return true;
 
   return false;
 }
@@ -221,7 +240,6 @@ const uploadScreenshot = async (req, res) => {
       },
     };
 
-    // 🔔 realtime push (no refresh)
     emitScreenshotEvent(Events.NEW, doc);
 
     if (req.query.debug === "1") {
