@@ -68,7 +68,6 @@ function mapConfusablesToLatin(s) {
   for (const [lat, rx] of Object.entries(map)) out = out.replace(rx, lat);
   return out;
 }
-
 function normalizeForOCR(s) {
   return mapConfusablesToLatin(
     s
@@ -83,20 +82,15 @@ function normalizeForOCR(s) {
       .replace(/[|!]/g, 'l')
   ).replace(/[\W_]+/g, '');
 }
-
 function hasSpam(rawText) {
   if (!rawText) return false;
 
-  // 1) Exact word "Spam" (capital S, case-sensitive)
   if (/\bSpam\b/.test(rawText)) return true;
 
-  // 2) "S p a m" style (S capital, darmiyan me spaces/punct bhi chaley)
   if (/\bS\W*p\W*a\W*m\b/.test(rawText)) return true;
 
-  // 3) Obfuscation: last letter m ya OCR ka "rn" etc — lekin S capital hi rahe
   if (/\bS\W*p\W*a\W*(?:m|rn|Rn|rN|RN)\b/.test(rawText)) return true;
 
-  // 4) Case-preserving normalization (no .toLowerCase()), non-word chars hata kar "Spam" dhoondho
   const normalizedCase = mapConfusablesToLatin(
     rawText
       .normalize('NFKD')
