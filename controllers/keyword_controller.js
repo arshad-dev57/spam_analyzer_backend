@@ -64,7 +64,6 @@ exports.bulkAdd = async (req, res, next) => {
 
     if (!words.length) return res.status(400).json({ message: 'words[] required' });
 
-    // Prepare docs with normalized values
     const docs = words.map(w => ({
       word: w,
       norm: w.toLowerCase(),

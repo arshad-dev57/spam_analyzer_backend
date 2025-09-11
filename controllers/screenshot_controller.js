@@ -8,11 +8,23 @@ const streamifier = require('streamifier');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const { getIO, Rooms, Events } = require('../config/socket');
-
+const Keyword = require('../models/keyword_model'); // <-- your Keyword model
 const isProd = process.env.VERCEL === '1' || process.env.NODE_ENV === 'production';
-const GEMINI_TIMEOUT_MS = isProd ? 30_000 : 20_000;
+const GEMINI_TIMEOUT_MS = isProd ? 45_000 : 25_000; // increased timeout
 
+// Concurrency throttle for free tier safety
+let _pending = 0;
+const MAX_CONCURRENT = isProd ? 2 : 3;
+async function withQueue(fn) {
+  while (_pending >= MAX_CONCURRENT) {
+    await new Promise(r => setTimeout(r, 150));
+  }
+  _pending++;
+  try { return await fn(); }
+  finally { _pending--; }
+}
 
+// ====== Cloudinary upload ======
 function streamUpload(buffer, folder) {
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
@@ -23,8 +35,9 @@ function streamUpload(buffer, folder) {
   });
 }
 
+// ====== Image Compression ======
 async function compressImageBuffer(inputBuffer) {
-  const targetSize = 100 * 1024; 
+  const targetSize = 100 * 1024;
   let quality = 80, width = 1000, best = inputBuffer;
 
   while (width >= 200) {
@@ -48,7 +61,7 @@ function withTimeout(promise, ms) {
   ]);
 }
 
-/** ====== text normalization helpers (unchanged) ====== */
+// ====== Text normalization helpers ======
 function mapConfusablesToLatin(s) {
   const map = {
     a: /[\u0430\u03B1]/g,
@@ -71,8 +84,7 @@ function mapConfusablesToLatin(s) {
 }
 function normalizeForOCR(s) {
   return mapConfusablesToLatin(
-    s
-      .toLowerCase()
+    s.toLowerCase()
       .normalize('NFKD')
       .replace(/[\u0300-\u036f]/g, '')
       .replace(/rn/g, 'm')
@@ -84,23 +96,15 @@ function normalizeForOCR(s) {
   ).replace(/[\W_]+/g, '');
 }
 
-/** ====== exact-case 'Spam' detector (S capital) ====== */
+// ====== Legacy 'Spam' detector (fallback) ======
 function hasSpam(rawText) {
   if (!rawText) return false;
-
-  // 1) Exact-case 'Spam'
   if (/\bSpam\b/.test(rawText)) return true;
-
-  // 2) Allow minor separators but keep exact capital S
   if (/\bS\W*p\W*a\W*m\b/.test(rawText)) return true;
-
-  // 3) rn↔m confusion, still case-sensitive on initial S
   if (/\bS\W*p\W*a\W*(?:m|rn|Rn|rN|RN)\b/.test(rawText)) return true;
 
-  // 4) Normalize confusables (but keep original exact-case check above primary)
   const normalizedCase = mapConfusablesToLatin(
-    rawText
-      .normalize('NFKD')
+    rawText.normalize('NFKD')
       .replace(/[\u0300-\u036f]/g, '')
       .replace(/rn/g, 'm')
       .replace(/\$/g, 's')
@@ -112,7 +116,6 @@ function hasSpam(rawText) {
 
   if (normalizedCase.includes('Spam')) return true;
 
-  // 5) Optional related keywords (case-insensitive)
   const alt = ['scam', 'junk', 'fraud'];
   if (new RegExp(`\\b(${alt.join('|')})\\b`, 'i').test(rawText)) return true;
 
@@ -122,17 +125,16 @@ function hasSpam(rawText) {
   return false;
 }
 
-/** ====== Gemini OCR (image understanding) ====== */
+// ====== Gemini client ======
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-/**
- * Extract plain text from image using Gemini (keeps case).
- * Returns string (no markdown, no code fences).
- */
-async function runGeminiExtractText(buf, mime = 'image/jpeg') {
+// low-level OCR call
+async function runGeminiExtractText(buf, mime = 'image/jpeg', {
+  modelName = 'gemini-1.5-flash',
+  timeoutMs = GEMINI_TIMEOUT_MS,
+} = {}) {
   const model = genAI.getGenerativeModel({
-    model: 'gemini-1.5-flash',
-    // Ensure plain text, not markdown/json by default
+    model: modelName,
     generationConfig: { responseMimeType: 'text/plain' },
   });
 
@@ -145,17 +147,165 @@ async function runGeminiExtractText(buf, mime = 'image/jpeg') {
 
   const res = await withTimeout(
     model.generateContent([{ text: prompt }, imagePart]),
-    GEMINI_TIMEOUT_MS
+    timeoutMs
   );
 
   let text = (res?.response?.text?.() || '').trim();
-
-  // strip common formatting if any slipped through
-  text = text.replace(/^```[\s\S]*?\n?|```$/g, '').trim();
-  return text;
+  return text.replace(/^```[\s\S]*?\n?|```$/g, '').trim();
 }
 
-/** ====== CMS payload shaper (unchanged) ====== */
+// ====== Retry helpers ======
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function parseGeminiError(e) {
+  const msg = (e?.message || e?.toString() || '').toString();
+  const status =
+    e?.status ||
+    e?.response?.status ||
+    (/\b(\d{3})\b/.exec(msg)?.[1] ? Number(/\b(\d{3})\b/.exec(msg)[1]) : undefined);
+  return { msg, status };
+}
+function isRetryableGeminiError(e) {
+  const { msg, status } = parseGeminiError(e);
+
+  // HTTP statuses
+  if ([408, 425, 429, 500, 502, 503, 504].includes(status)) return true;
+
+  // Network/undici-style errors (status undefined cases)
+  if (/(overloaded|unavailable|timeout|timed out|fetch failed|socket hang up)/i.test(msg)) return true;
+
+  // Node error codes
+  const code = e?.code || e?.cause?.code;
+  if (code && [
+    'ECONNRESET','ETIMEDOUT','ENETUNREACH','EAI_AGAIN',
+    'UND_ERR_CONNECT_TIMEOUT','UND_ERR_SOCKET','UND_ERR_HEADERS_TIMEOUT'
+  ].includes(code)) return true;
+
+  return false;
+}
+function logRetry(attempt, retries, modelName, err) {
+  const { msg, status } = parseGeminiError(err);
+  const code = err?.code || err?.cause?.code || 'NA';
+  console.warn(`[GENAI] attempt=${attempt}/${retries} model=${modelName} status=${status ?? 'NA'} code=${code} retryable=${isRetryableGeminiError(err)}: ${msg}`);
+}
+
+// high-level OCR with retries + fallback
+async function runGeminiExtractTextWithRetry(originalBuf, compressedBuf, mime = 'image/jpeg', {
+  retries = 3,
+  baseDelay = 1000,
+} = {}) {
+  const models = ['gemini-1.5-flash', 'gemini-1.5-flash-8b'];
+  const buffers = [originalBuf, compressedBuf];
+  let lastError;
+
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    const delay = baseDelay * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 300);
+
+    for (const buf of buffers) {
+      for (const modelName of models) {
+        try {
+          const text = await runGeminiExtractText(buf, mime, { modelName, timeoutMs: GEMINI_TIMEOUT_MS });
+          if (text && text.length) {
+            if (attempt > 1) console.log(`[GENAI] success after retry #${attempt}, model=${modelName}, len=${text.length}`);
+            return { text, lastError: undefined };
+          }
+        } catch (e) {
+          lastError = e;
+          logRetry(attempt, retries, modelName, e);
+
+          const retryable = isRetryableGeminiError(e);
+          if (attempt < retries && retryable) {
+            await sleep(delay);
+          } else if (!retryable) {
+            return { text: '', lastError };
+          }
+        }
+      }
+    }
+  }
+  return { text: '', lastError };
+}
+
+// ====== Keyword matching (DB-driven) ======
+
+// cache keywords to reduce DB hits
+const KEYWORD_CACHE_TTL_MS = isProd ? 30_000 : 10_000;
+let _kwCache = { ts: 0, items: [] };
+
+async function loadKeywordsCached() {
+  const now = Date.now();
+  if (now - _kwCache.ts < KEYWORD_CACHE_TTL_MS && _kwCache.items.length) {
+    return _kwCache.items;
+  }
+  const items = await Keyword.find({}).select('_id word norm').lean();
+  _kwCache = { ts: now, items };
+  return items;
+}
+
+function escapeRegExp(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+function buildFlexibleRegex(word) {
+  const parts = [...word].map(ch => escapeRegExp(ch)).join('\\W*');
+  return new RegExp(`\\b${parts}\\b`);
+}
+function normalizeTightLower(s) {
+  return mapConfusablesToLatin(
+    s.toLowerCase()
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/rn/g, 'm')
+      .replace(/\$/g, 's')
+      .replace(/5/g, 's')
+      .replace(/@/g, 'a')
+      .replace(/0/g, 'o')
+      .replace(/[|!]/g, 'l')
+  ).replace(/[\W_]+/g, '');
+}
+function findKeywordMatches(rawText, keywords) {
+  const matches = [];
+  if (!rawText) return matches;
+
+  const normalized = normalizeTightLower(rawText);
+
+  for (const k of keywords) {
+    const word = (k.word || '').toString();
+    const norm = (k.norm || '').toString();
+    if (!word) continue;
+
+    // exact-case
+    try {
+      const exactRx = new RegExp(`\\b${escapeRegExp(word)}\\b`);
+      if (exactRx.test(rawText)) {
+        matches.push({ id: String(k._id), word, norm, matchedAs: 'exact' });
+        continue;
+      }
+    } catch {}
+
+    // flexible separators
+    try {
+      const flexRx = buildFlexibleRegex(word);
+      if (flexRx.test(rawText)) {
+        matches.push({ id: String(k._id), word, norm, matchedAs: 'flex' });
+        continue;
+      }
+    } catch {}
+
+    // normalized includes
+    if (norm && normalized.includes(norm.replace(/\s+/g, ''))) {
+      matches.push({ id: String(k._id), word, norm, matchedAs: 'normalized' });
+      continue;
+    }
+  }
+  return matches;
+}
+function decideLabelFromMatches(matches) {
+  if (!matches.length) return null;
+  const set = new Set(matches.map(m => m.norm));
+  if (set.has('not spam')) return { label: 'Not Spam', isSpam: false };
+  if (set.has('spam')) return { label: 'Spam', isSpam: true };
+  if (set.has('suspected spam')) return { label: 'Suspected Spam', isSpam: true };
+  return { label: [...set][0], isSpam: null };
+}
+
+// ====== CMS payload shaper ======
 function shape(item) {
   return {
     id: item._id,
@@ -172,12 +322,11 @@ function shape(item) {
   };
 }
 
-/** ====== socket emitter (unchanged) ====== */
+// ====== socket emitter ======
 function emitScreenshotEvent(kind, docOrObj) {
   try {
     const io = getIO();
     const data = docOrObj._id ? shape(docOrObj) : docOrObj;
-
     io.to(Rooms.all).emit(kind, data);
     if (data.user) io.to(Rooms.user(String(data.user))).emit(kind, data);
     if (data.email) io.to(Rooms.email(String(data.email))).emit(kind, data);
@@ -187,20 +336,13 @@ function emitScreenshotEvent(kind, docOrObj) {
   }
 }
 
+// ====== main upload route ======
 const uploadScreenshot = async (req, res) => {
   try {
-    if (!req.user?.id) {
-      return res.status(401).json({ success: false, message: "Auth required" });
-    }
-    if (!req.user?.email) {
-      return res.status(400).json({ success: false, message: "Email is required" });
-    }
-    if (!req.user?.name) {
-      return res.status(400).json({ success: false, message: "Name is required" });
-    }
-    if (!req.file?.buffer) {
-      return res.status(400).json({ success: false, message: "No file uploaded" });
-    }
+    if (!req.user?.id) return res.status(401).json({ success: false, message: "Auth required" });
+    if (!req.user?.email) return res.status(400).json({ success: false, message: "Email is required" });
+    if (!req.user?.name) return res.status(400).json({ success: false, message: "Name is required" });
+    if (!req.file?.buffer) return res.status(400).json({ success: false, message: "No file uploaded" });
 
     const today = new Date().toISOString().split("T")[0];
     const folderName = `screenshots/${req.user.id}/${today}`;
@@ -208,25 +350,53 @@ const uploadScreenshot = async (req, res) => {
     const compressedBuffer = await compressImageBuffer(req.file.buffer);
     const uploadResult = await streamUpload(compressedBuffer, folderName);
 
-    // ⬇️ Gemini instead of Tesseract
+    // ---- Gemini OCR (queued) with retry/fallback ----
     let text = "";
     let genaiError;
     try {
-      // Try original first (better fidelity), then compressed
-      text = await runGeminiExtractText(req.file.buffer, req.file.mimetype || 'image/jpeg');
-      if (!text) text = await runGeminiExtractText(compressedBuffer, req.file.mimetype || 'image/jpeg');
-      console.log(`[GENAI] len=${text.length}`);
+      const mime = req.file.mimetype || 'image/jpeg';
+      const { text: out, lastError } = await withQueue(() =>
+        runGeminiExtractTextWithRetry(
+          req.file.buffer,
+          compressedBuffer,
+          mime,
+          { retries: 3, baseDelay: isProd ? 1500 : 900 } // 1.5s -> 3s -> 6s
+        )
+      );
+      text = out || "";
+      genaiError = lastError ? (lastError.message || String(lastError)) : undefined;
+      console.log(`[GENAI] len=${text.length} retry_err=${genaiError ? '1' : '0'}`);
     } catch (e) {
-      console.warn("Gemini issue:", e.message);
+      console.warn("Gemini issue (wrapper catch):", e.message);
       genaiError = e.message;
     }
 
-    const containsSpam = hasSpam(text);
+    // ---- Keyword detection ----
+    let keywordMatches = [];
+    let keywordDecision = null;
+    try {
+      const keywords = await loadKeywordsCached(); // [{_id, word, norm}]
+      keywordMatches = findKeywordMatches(text, keywords);
+      keywordDecision = decideLabelFromMatches(keywordMatches);
+    } catch (e) {
+      console.warn('Keyword detection failed:', e.message);
+    }
+    const keywordFound = keywordMatches.length > 0;
+    const matchedKeywords = Array.from(new Set(keywordMatches.map(k => k.word)));
 
-    // simple phone pattern (unchanged)
-    const matches = text?.match(/\+?[0-9][0-9\s\-()]{7,}/g);
-    const extracted = matches?.[0]?.replace(/\s+/g, " ").trim() || "Not Found";
+    // ---- Decide isSpam ----
+    let isSpamFinal;
+    if (keywordDecision && typeof keywordDecision.isSpam === 'boolean') {
+      isSpamFinal = keywordDecision.isSpam;
+    } else {
+      isSpamFinal = hasSpam(text);
+    }
 
+    // ---- Extract number (simple pattern) ----
+    const phoneMatches = text?.match(/\+?[0-9][0-9\s\-()]{7,}/g);
+    const extracted = phoneMatches?.[0]?.replace(/\s+/g, " ").trim() || "Not Found";
+
+    // ---- Save doc ----
     const doc = await AnalyzedScreenshot.create({
       user: req.user.id,
       name: req.user.name,
@@ -236,9 +406,10 @@ const uploadScreenshot = async (req, res) => {
       time: new Date(),
       toNumber: req.body.toNumber || "Unknown",
       carrier: req.body.carrier || "Unknown",
-      isSpam: containsSpam,
+      isSpam: isSpamFinal,
     });
 
+    // ---- Response ----
     const payload = {
       success: true,
       data: {
@@ -252,15 +423,19 @@ const uploadScreenshot = async (req, res) => {
         toNumber: doc.toNumber,
         carrier: doc.carrier,
         isSpam: doc.isSpam,
+        keywordFound,        
+        matchedKeywords,     
       },
     };
 
     emitScreenshotEvent(Events.NEW, doc);
 
     if (req.query.debug === "1") {
-      payload.data.rawOCR = text; // now from Gemini
+      payload.data.rawOCR = text;
       payload.data.normalized = normalizeForOCR(text);
       payload.data.env = { isProd, timeoutMs: GEMINI_TIMEOUT_MS, model: 'gemini-1.5-flash' };
+      payload.data.keywordMatches = keywordMatches; // detailed [{id, word, norm, matchedAs}]
+      payload.data.keywordLabel = keywordDecision?.label || null;
       if (genaiError) payload.data.genaiError = genaiError;
     }
 
@@ -270,7 +445,6 @@ const uploadScreenshot = async (req, res) => {
     return res.status(500).json({ success: false, error: err.message });
   }
 };
-
 
 
 const getAllAnalyzedScreenshots = async (req, res) => {
