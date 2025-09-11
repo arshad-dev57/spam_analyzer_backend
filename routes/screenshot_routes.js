@@ -13,4 +13,5 @@ router.get('/recently-deleted', getDeletedScreenshots); // recently deleted list
 router.post('/restore/:id', restoreScreenshot); // restore
 router.delete('/permanent/:id', permanentDeleteScreenshot); // permanent delete
 router.get('/getallnamedfilterscreenshots', getallnamedfilterscreenshots);
+
 module.exports = router;
