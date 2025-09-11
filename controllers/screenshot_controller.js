@@ -24,7 +24,6 @@ async function withQueue(fn) {
   finally { _pending--; }
 }
 
-// ====== Cloudinary upload ======
 function streamUpload(buffer, folder) {
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
@@ -35,11 +34,9 @@ function streamUpload(buffer, folder) {
   });
 }
 
-// ====== Image Compression ======
 async function compressImageBuffer(inputBuffer) {
   const targetSize = 100 * 1024;
   let quality = 80, width = 1000, best = inputBuffer;
-
   while (width >= 200) {
     for (let q = quality; q >= 30; q -= 10) {
       const out = await sharp(inputBuffer)
@@ -53,7 +50,6 @@ async function compressImageBuffer(inputBuffer) {
   }
   return best;
 }
-
 function withTimeout(promise, ms) {
   return Promise.race([
     promise,
