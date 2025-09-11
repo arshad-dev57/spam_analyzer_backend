@@ -20,7 +20,7 @@ const Events = {
 function initSocket(server, opts = {}) {
   io = new Server(server, {
     cors: {
-      origin: opts.corsOrigins || ['http://localhost:5173', 'http://localhost:3000'],
+      origin: opts.corsOrigins || ['http://localhost:5000', 'http://localhost:5000'],
       credentials: false,
     },
     transports: ['websocket'],

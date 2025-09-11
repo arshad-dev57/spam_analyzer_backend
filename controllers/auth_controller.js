@@ -8,10 +8,8 @@ const SALT_ROUNDS = Number(process.env.SALT_ROUNDS || 10);
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "7d";
 
 async function signTokenFull(userLike) {
-  // Normalize input → plain object
-  let obj = userLike?.toObject?.() ? userLike.toObject() : userLike;
 
-  // Resolve id
+  let obj = userLike?.toObject?.() ? userLike.toObject() : userLike;
   let id =
     (obj && (obj._id?.toString?.() || obj.id)) ||
     (typeof userLike === "string" ? userLike : null);
@@ -27,7 +25,6 @@ async function signTokenFull(userLike) {
     email = email ?? fresh.email;
     name  = name  ?? fresh.name;
   }
-
   const payload = { id: String(id), email, name };
   return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
 }
@@ -35,11 +32,11 @@ async function signTokenFull(userLike) {
 exports.register = async (req, res) => {
   try {
     const { name = "", email = "", password = "" } = req.body || {};
-    const cleanName = name.trim().toLowerCase();
+    const cleanName = name.trim();
     const cleanEmail = email.trim().toLowerCase();
 
-    if (!cleanName || !cleanEmail || !password) {
-      return res.status(400).json({ message: "name, email, password required" });
+    if (  !cleanEmail || !password) {
+      return res.status(400).json({ message: "email, password required" });
     }
 
     const exists = await User.findOne({ email: cleanEmail });

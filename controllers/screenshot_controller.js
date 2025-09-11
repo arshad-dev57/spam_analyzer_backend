@@ -1,17 +1,17 @@
 // controllers/analyzedScreenshot.controller.js
+// controllers/uploadScreenshot.js
 const path = require('path');
 const cloudinary = require('../config/cloudinary');
-const tesseract = require('tesseract.js');
 const sharp = require('sharp');
 const AnalyzedScreenshot = require('../models/analyzedScreenshot');
 const streamifier = require('streamifier');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const { getIO, Rooms, Events } = require('../config/socket');
 
 const isProd = process.env.VERCEL === '1' || process.env.NODE_ENV === 'production';
-const OCR_TIMEOUT_MS = isProd ? 45_000 : 30_000;
+const GEMINI_TIMEOUT_MS = isProd ? 30_000 : 20_000;
 
-const TESS_LANG_PATH = path.join(process.cwd(), 'public', 'tessdata');
 
 function streamUpload(buffer, folder) {
   return new Promise((resolve, reject) => {
@@ -24,7 +24,7 @@ function streamUpload(buffer, folder) {
 }
 
 async function compressImageBuffer(inputBuffer) {
-  const targetSize = 100 * 1024; // ~100KB
+  const targetSize = 100 * 1024; 
   let quality = 80, width = 1000, best = inputBuffer;
 
   while (width >= 200) {
@@ -44,10 +44,11 @@ async function compressImageBuffer(inputBuffer) {
 function withTimeout(promise, ms) {
   return Promise.race([
     promise,
-    new Promise((_, rej) => setTimeout(() => rej(new Error('OCR_TIMEOUT')), ms)),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('GENAI_TIMEOUT')), ms)),
   ]);
 }
 
+/** ====== text normalization helpers (unchanged) ====== */
 function mapConfusablesToLatin(s) {
   const map = {
     a: /[\u0430\u03B1]/g,
@@ -82,20 +83,26 @@ function normalizeForOCR(s) {
       .replace(/[|!]/g, 'l')
   ).replace(/[\W_]+/g, '');
 }
+
+/** ====== exact-case 'Spam' detector (S capital) ====== */
 function hasSpam(rawText) {
   if (!rawText) return false;
 
+  // 1) Exact-case 'Spam'
   if (/\bSpam\b/.test(rawText)) return true;
 
+  // 2) Allow minor separators but keep exact capital S
   if (/\bS\W*p\W*a\W*m\b/.test(rawText)) return true;
 
+  // 3) rn↔m confusion, still case-sensitive on initial S
   if (/\bS\W*p\W*a\W*(?:m|rn|Rn|rN|RN)\b/.test(rawText)) return true;
 
+  // 4) Normalize confusables (but keep original exact-case check above primary)
   const normalizedCase = mapConfusablesToLatin(
     rawText
       .normalize('NFKD')
       .replace(/[\u0300-\u036f]/g, '')
-      .replace(/rn/g, 'm')   // OCR fix
+      .replace(/rn/g, 'm')
       .replace(/\$/g, 's')
       .replace(/5/g, 's')
       .replace(/@/g, 'a')
@@ -105,34 +112,50 @@ function hasSpam(rawText) {
 
   if (normalizedCase.includes('Spam')) return true;
 
-  // 5) (Optional) Related keywords — yeh abhi case-insensitive rehen ge
+  // 5) Optional related keywords (case-insensitive)
   const alt = ['scam', 'junk', 'fraud'];
   if (new RegExp(`\\b(${alt.join('|')})\\b`, 'i').test(rawText)) return true;
 
-  // Lowercased OCR-normalized text par bhi alt check
-  const normLower = normalizeForOCR(rawText); // yeh aapki existing function hai (lowercase karti hai)
+  const normLower = normalizeForOCR(rawText);
   if (new RegExp(`(${alt.join('|')})`).test(normLower)) return true;
 
   return false;
 }
 
-async function runOCR(buf, psm = 6) {
-  const ocrInput = await sharp(buf).grayscale().normalize().toBuffer();
-  const t0 = Date.now();
-  const ocrRes = await withTimeout(
-    tesseract.recognize(ocrInput, 'eng', {
-      langPath: TESS_LANG_PATH,
-      tessedit_pageseg_mode: String(psm),
-      preserve_interword_spaces: '1',
-    }),
-    OCR_TIMEOUT_MS
+/** ====== Gemini OCR (image understanding) ====== */
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+/**
+ * Extract plain text from image using Gemini (keeps case).
+ * Returns string (no markdown, no code fences).
+ */
+async function runGeminiExtractText(buf, mime = 'image/jpeg') {
+  const model = genAI.getGenerativeModel({
+    model: 'gemini-1.5-flash',
+    // Ensure plain text, not markdown/json by default
+    generationConfig: { responseMimeType: 'text/plain' },
+  });
+
+  const prompt =
+    'Extract ALL visible text from this image as plain text. ' +
+    'Preserve original casing and characters exactly. ' +
+    'Do NOT summarize or translate. Return ONLY the raw text.';
+
+  const imagePart = { inlineData: { data: buf.toString('base64'), mimeType: mime } };
+
+  const res = await withTimeout(
+    model.generateContent([{ text: prompt }, imagePart]),
+    GEMINI_TIMEOUT_MS
   );
-  const text = (ocrRes.data.text || '').trim();
-  console.log(`[OCR] PSM=${psm} len=${text.length} took=${Date.now()-t0}ms`);
+
+  let text = (res?.response?.text?.() || '').trim();
+
+  // strip common formatting if any slipped through
+  text = text.replace(/^```[\s\S]*?\n?|```$/g, '').trim();
   return text;
 }
 
-/** 🔔 common payload shaper (what CMS needs) */
+/** ====== CMS payload shaper (unchanged) ====== */
 function shape(item) {
   return {
     id: item._id,
@@ -149,21 +172,17 @@ function shape(item) {
   };
 }
 
-/** 🔔 broadcast helper */
+/** ====== socket emitter (unchanged) ====== */
 function emitScreenshotEvent(kind, docOrObj) {
   try {
     const io = getIO();
     const data = docOrObj._id ? shape(docOrObj) : docOrObj;
 
-    // global (all listeners)
     io.to(Rooms.all).emit(kind, data);
-    // per-user & per-email channels for targeted UIs
     if (data.user) io.to(Rooms.user(String(data.user))).emit(kind, data);
     if (data.email) io.to(Rooms.email(String(data.email))).emit(kind, data);
-    // admins dashboard
     io.to(Rooms.admins).emit(kind, data);
   } catch (e) {
-    // If socket not initialized (e.g., serverless), don't crash the request
     console.warn('WS emit skipped:', e.message);
   }
 }
@@ -189,20 +208,22 @@ const uploadScreenshot = async (req, res) => {
     const compressedBuffer = await compressImageBuffer(req.file.buffer);
     const uploadResult = await streamUpload(compressedBuffer, folderName);
 
+    // ⬇️ Gemini instead of Tesseract
     let text = "";
-    let ocrErrors = [];
+    let genaiError;
     try {
-      text = await runOCR(req.file.buffer, 6);
-      if (!text) text = await runOCR(compressedBuffer, 6);
-      if (!text) text = await runOCR(req.file.buffer, 7);
-      if (!text) text = await runOCR(req.file.buffer, 3);
+      // Try original first (better fidelity), then compressed
+      text = await runGeminiExtractText(req.file.buffer, req.file.mimetype || 'image/jpeg');
+      if (!text) text = await runGeminiExtractText(compressedBuffer, req.file.mimetype || 'image/jpeg');
+      console.log(`[GENAI] len=${text.length}`);
     } catch (e) {
-      console.warn("OCR issue:", e.message);
-      ocrErrors.push(e.message);
+      console.warn("Gemini issue:", e.message);
+      genaiError = e.message;
     }
 
     const containsSpam = hasSpam(text);
 
+    // simple phone pattern (unchanged)
     const matches = text?.match(/\+?[0-9][0-9\s\-()]{7,}/g);
     const extracted = matches?.[0]?.replace(/\s+/g, " ").trim() || "Not Found";
 
@@ -237,10 +258,10 @@ const uploadScreenshot = async (req, res) => {
     emitScreenshotEvent(Events.NEW, doc);
 
     if (req.query.debug === "1") {
-      payload.data.rawOCR = text;
+      payload.data.rawOCR = text; // now from Gemini
       payload.data.normalized = normalizeForOCR(text);
-      payload.data.env = { isProd, langPath: TESS_LANG_PATH, timeoutMs: OCR_TIMEOUT_MS };
-      if (ocrErrors.length) payload.data.ocrErrors = ocrErrors;
+      payload.data.env = { isProd, timeoutMs: GEMINI_TIMEOUT_MS, model: 'gemini-1.5-flash' };
+      if (genaiError) payload.data.genaiError = genaiError;
     }
 
     return res.status(201).json(payload);
@@ -249,6 +270,8 @@ const uploadScreenshot = async (req, res) => {
     return res.status(500).json({ success: false, error: err.message });
   }
 };
+
+
 
 const getAllAnalyzedScreenshots = async (req, res) => {
   try {
