@@ -126,15 +126,16 @@ function normalizeForOCR(s) {
     (s || '')
       .toLowerCase()
       .normalize('NFKD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/rn/g, 'm')
-      .replace(/\$/g, 's')
-      .replace(/5/g, 's')
-      .replace(/@/g, 'a')
-      .replace(/0/g, 'o')
-      .replace(/[|!]/g, 'l')
-  ).replace(/[\W_]+/g, '');
+      .replace(/[\u0300-\u036f]/g, '') // accents
+      .replace(/rn/g, 'm')             // rn -> m (common OCR)
+      .replace(/\$/g, 's')             // $ -> s
+      // !! removed: .replace(/5/g, 's')
+      .replace(/@/g, 'a')              // @ -> a
+      // !! removed: .replace(/0/g, 'o')
+      .replace(/[|!]/g, 'l')           // | and ! -> l
+  ).replace(/[\W_]+/g, '');            // keep only [a-z0-9]
 }
+
 
 // --------------- fuzzy match -----------------
 function lev(a, b) {
@@ -161,23 +162,59 @@ function fuzzyContains(haystack, needle, maxDist = 2) {
   return false;
 }
 
-// --------------- spam detect -----------------
 function detectSpam(rawText, debug) {
   const raw = rawText || '';
   const norm = normalizeForOCR(raw);
+  const letters = norm.replace(/[0-9]/g, ''); // remove digits entirely
+
   const reasons = [];
 
-  if (/\b(Suspected\s*Spam|Suspected|Spam|Risk)\b/i.test(raw)) reasons.push('raw-regex:Suspected|Spam|Risk');
-  if (/\bs\s*p\s*a\s*m\b/i.test(raw)) reasons.push('raw-spaced:s p a m');
+  // Exact banner phrases on RAW text (most reliable)
+  const rawExact = [
+    /\bSuspected\s*Spam\b/i,
+    /\bSpam\s*Risk\b/i,
+    /\bScam\s*Likely\b/i,
+    /\bFraud\s*Risk\b/i,
+    /\bSpam\b/i // standalone "Spam" (e.g., big header)
+  ];
+  if (rawExact.some(rx => rx.test(raw))) {
+    reasons.push('raw-exact');
+  }
 
-  const words = ['spam', 'risk', 'suspected', 'scam', 'likely', 'fraud', 'junk'];
-  words.forEach(w => { if (fuzzyContains(norm, w, 1)) reasons.push(`norm-word:${w}`); });
+  // Spaced letters like "S p a m"
+  if (/\bs\s*p\s*a\s*m\b/i.test(raw)) reasons.push('raw-spaced');
 
-  const phrases = ['suspectedspam', 'spamrisk', 'scamlikely', 'fraudrisk', 'spamlikely'];
-  phrases.forEach(p => { if (fuzzyContains(norm, p, 2)) reasons.push(`norm-phrase:${p}`); });
+  // Strong tokens must appear (fuzzy <=1) on letters-only string
+  const strong = ['spam', 'scam', 'fraud', 'suspected'];
+  const hasStrong = strong.some(w => fuzzyContains(letters, w, 1));
+  if (hasStrong) reasons.push('letters-strong');
+
+  // Phrase combos allowed (fuzzy <=2) on letters-only
+  const phrases = ['suspectedspam', 'spamrisk', 'scamlikely', 'fraudrisk'];
+  const hasPhrase = phrases.some(p => fuzzyContains(letters, p, 2));
+  if (hasPhrase) reasons.push('letters-phrase');
+
+  // IMPORTANT: "risk" / "likely" alone should NOT trigger
+  // (pehle yahin se false positives aa rahe the)
+  // Agar sirf risk/likely milta hai bina strong/phrase ke, ignore:
+  const weak = ['risk', 'likely'];
+  const hasOnlyWeak =
+    !hasStrong && !hasPhrase &&
+    weak.some(w => fuzzyContains(letters, w, 1));
+  if (hasOnlyWeak) {
+    // don't add reason; explicitly ignore weak-only
+  }
 
   const isSpam = reasons.length > 0;
-  debug.logger.log('detectSpam:', { isSpam, reasons });
+
+  if (debug?.enabled) {
+    debug.logger.log('detectSpam:', {
+      isSpam,
+      reasons,
+      lettersOnly: letters.slice(0, 300)
+    });
+  }
+
   return { isSpam, reasons, norm };
 }
 
