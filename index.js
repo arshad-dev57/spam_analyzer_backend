@@ -38,14 +38,6 @@ app.use('/api/dashboard', require('./routes/dashboard_routes'));
   catch (e) { console.error('DB connect error at boot:', e?.message); }
 })();
 
-/**
- * ──────────────────────────────────────────────────────────────────────────────
- *  VERCEL / serverless: export handler (no WebSockets)
- *  Non-Vercel (local / Render / VPS): create HTTP server + init Socket.IO
- * ──────────────────────────────────────────────────────────────────────────────
- */
-
-// Export for Vercel (HTTP-only, no WS on serverless)
 module.exports = (req, res) => app(req, res);
 
 // Start server locally / on long-lived hosts (Render, VPS, etc.)

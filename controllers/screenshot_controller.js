@@ -9,12 +9,6 @@ const AnalyzedScreenshot = require('../models/analyzedScreenshot');
 const streamifier = require('streamifier');
 const { getIO, Rooms, Events } = require('../config/socket');
 const user = require('../models/user');
-/**
- * Upload + OCR + Spam detection (debug-heavy)
- * Debug switch: ?debug=1 OR header x-debug:1 OR form/body field debug=1
- */
-
-
 const isProd = process.env.VERCEL === '1' || process.env.NODE_ENV === 'production';
 const OCR_TIMEOUT_MS = isProd ? 60_000 : 45_000;
 const TESS_LANG_PATH = path.join(process.cwd(), 'public', 'tessdata');
@@ -704,6 +698,54 @@ const permanentDeleteScreenshot = async (req, res) => {
     return res.status(500).json({ success: false, error: err.message });
   }
 };
+const  wipeAnalyzedScreenshots = async (req, res) => {
+  try {
+    const mode = (req.query.mode || 'soft').toLowerCase();
+    const { confirm, userId, from, to } = req.query;
+
+    // Build filter (default: all docs)
+    const filter = {};
+    if (userId && mongoose.isValidObjectId(userId)) {
+      filter.user = new mongoose.Types.ObjectId(userId);
+    }
+    if (from || to) {
+      filter.time = {};
+      if (from) filter.time.$gte = new Date(from);
+      if (to) filter.time.$lte = new Date(to);
+    }
+
+    if (mode === 'hard') {
+      if (confirm !== 'YES') {
+        return res.status(400).json({
+          success: false,
+          error:
+            'Hard delete is destructive. Re-run with ?mode=hard&confirm=YES to proceed.',
+        });
+      }
+      const { deletedCount } = await AnalyzedScreenshot.deleteMany(filter);
+      return res.json({
+        success: true,
+        mode: 'hard',
+        deletedCount,
+      });
+    }
+    const result = await AnalyzedScreenshot.updateMany(
+      filter,
+      {
+        $set: { isDeleted: true, deletedAt: new Date() },
+      }
+    );
+    return res.json({
+      success: true,
+      mode: 'soft',
+      matched: result.matchedCount ?? result.n,     
+      modified: result.modifiedCount ?? result.nModified,
+    });
+  } catch (err) {
+    console.error('❌ wipeAnalyzedScreenshots error:', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
 module.exports = {
   uploadScreenshot,
   getAllAnalyzedScreenshots,
@@ -714,5 +756,6 @@ module.exports = {
   getlogginscreenshot,
   getallfilteredscreenshots,
   getallnamedfilterscreenshots,
-  getFlaggedNumbersStats
+  getFlaggedNumbersStats,
+  wipeAnalyzedScreenshots
 };
