@@ -2,9 +2,11 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
-const http = require('http');                 // 🔸 for socket.io
+
+const http = require('http');          
+       // 🔸 for socket.io
 const connectDB = require('./config/db');
-const { initSocket } = require('./config/socket');  // 🔔 our socket bootstrap
+const { initSocket } = require('./config/socket');  
 
 // Load env only in local/dev
 if (process.env.NODE_ENV !== 'production') {
@@ -28,6 +30,7 @@ app.use('/api/screenshot', require('./routes/screenshot_routes'));
 app.use('/api/user', require('./routes/auth_routes'));
 app.use('/api', require('./routes/ping_routes'));
 app.use('/api/keyword', require('./routes/keywords_routes'));
+app.use('/api/dashboard', require('./routes/dashboard_routes'));
 
 // DB connect (don’t block server start)
 (async () => {

@@ -1,6 +1,6 @@
 const express = require('express');
 const upload = require('../middleware/multer');
-const { uploadScreenshot, getAllAnalyzedScreenshots, softDeleteScreenshot, getDeletedScreenshots, restoreScreenshot, permanentDeleteScreenshot,getlogginscreenshot,getallfilteredscreenshots,getallnamedfilterscreenshots } = require('../controllers/screenshot_controller');
+const { uploadScreenshot, getAllAnalyzedScreenshots, softDeleteScreenshot, getDeletedScreenshots, restoreScreenshot, permanentDeleteScreenshot,getlogginscreenshot,getallfilteredscreenshots,getallnamedfilterscreenshots,getFlaggedNumbersStats } = require('../controllers/screenshot_controller');
 const middleware = require('../middleware/auth_middleware');
 const router = express.Router();
 
@@ -13,5 +13,6 @@ router.get('/recently-deleted', getDeletedScreenshots); // recently deleted list
 router.post('/restore/:id', restoreScreenshot); // restore
 router.delete('/permanent/:id', permanentDeleteScreenshot); // permanent delete
 router.get('/getallnamedfilterscreenshots', getallnamedfilterscreenshots);
+router.get('/getflaggednumbersstats', getFlaggedNumbersStats);
 
 module.exports = router;
