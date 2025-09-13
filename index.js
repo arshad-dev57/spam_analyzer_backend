@@ -80,13 +80,3 @@ if (require.main === module && !process.env.VERCEL) {
   });
 }
 
-/*  ────────────────────────────────────────────────────────────────────────────
-    NOTE (proxy/nginx):
-      proxy_set_header Upgrade $http_upgrade;
-      proxy_set_header Connection "upgrade";
-    Client connect example:
-      io(API_BASE, { auth: { role: 'admin', userId, email }, transports: ['websocket'] })
-    Events emitted by controllers:
-      'screenshots:new', 'screenshots:update', 'screenshots:delete:soft', 'screenshots:delete:permanent'
-    ────────────────────────────────────────────────────────────────────────────
-*/
