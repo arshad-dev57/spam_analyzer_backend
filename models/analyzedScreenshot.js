@@ -10,7 +10,7 @@ const analyzedScreenshotSchema = new mongoose.Schema(
       index: true,
     },
 
-    email: { type: String, required: true },  // <-- Add the email field here
+    email: { type: String, required: true },  
    name: { type: String, required: true },
     imageUrl: { type: String, required: true },
     extractedNumber: { type: String, required: true },

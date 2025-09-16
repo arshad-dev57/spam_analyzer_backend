@@ -71,10 +71,9 @@ const uploadScreenshot = async (req, res) => {
   };
 
   try {
-    // validate
     if (!req.user?.id) return res.status(401).json({ success: false, message: "Auth required" });
     if (!req.user?.email) return res.status(400).json({ success: false, message: "Email is required" });
-    if (!req.user?.name) return res.status(400).json({ success: false, message: "Name is required" });
+    
     if (!req.file?.buffer) return res.status(400).json({ success: false, message: "No file uploaded" });
     if (typeof req.body.isSpam === 'undefined') {
       return res.status(400).json({ success: false, message: "isSpam field required in body" });
