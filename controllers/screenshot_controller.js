@@ -465,7 +465,6 @@ const  wipeAnalyzedScreenshots = async (req, res) => {
     const mode = (req.query.mode || 'soft').toLowerCase();
     const { confirm, userId, from, to } = req.query;
 
-    // Build filter (default: all docs)
     const filter = {};
     if (userId && mongoose.isValidObjectId(userId)) {
       filter.user = new mongoose.Types.ObjectId(userId);
@@ -508,6 +507,20 @@ const  wipeAnalyzedScreenshots = async (req, res) => {
     return res.status(500).json({ success: false, error: err.message });
   }
 };
+
+const purgeAnalyzedScreenshots = async (req, res) => {
+  try {
+    const result = await AnalyzedScreenshot.deleteMany({}); // hard delete all docs
+    return res.status(200).json({
+      ok: true,
+      message: "All analyzed screenshots deleted.",
+      deletedCount: result.deletedCount,
+    });
+  } catch (err) {
+    return res.status(500).json({ ok: false, message: err.message });
+  }
+};
+
 module.exports = {
   uploadScreenshot,
   getAllAnalyzedScreenshots,
@@ -519,5 +532,6 @@ module.exports = {
   getallfilteredscreenshots,
   getallnamedfilterscreenshots,
   getFlaggedNumbersStats,
-  wipeAnalyzedScreenshots
+  wipeAnalyzedScreenshots,
+  purgeAnalyzedScreenshots
 };

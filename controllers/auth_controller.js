@@ -45,7 +45,6 @@ async function findOrCreateGoogleUser({ email, name }) {
 
   let user = await User.findOne({ email: cleanEmail }).lean();
   if (user) {
-    // optional: keep name in sync if empty
     if (!user.name && cleanName) {
       await User.updateOne({ _id: user._id }, { $set: { name: cleanName } });
       user = await User.findById(user._id).lean();

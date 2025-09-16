@@ -1,6 +1,6 @@
 const express = require('express');
 const upload = require('../middleware/multer');
-const { uploadScreenshot, getAllAnalyzedScreenshots, softDeleteScreenshot, getDeletedScreenshots, restoreScreenshot, permanentDeleteScreenshot,getlogginscreenshot,getallfilteredscreenshots,getallnamedfilterscreenshots,getFlaggedNumbersStats,wipeAnalyzedScreenshots } = require('../controllers/screenshot_controller');
+const { uploadScreenshot, getAllAnalyzedScreenshots, softDeleteScreenshot, getDeletedScreenshots, restoreScreenshot, permanentDeleteScreenshot,getlogginscreenshot,getallfilteredscreenshots,getallnamedfilterscreenshots,getFlaggedNumbersStats,wipeAnalyzedScreenshots,purgeAnalyzedScreenshots } = require('../controllers/screenshot_controller');
 const middleware = require('../middleware/auth_middleware');
 const router = express.Router();
 
@@ -15,4 +15,6 @@ router.delete('/permanent/:id', permanentDeleteScreenshot); // permanent delete
 router.get('/getallnamedfilterscreenshots', getallnamedfilterscreenshots);
 router.get('/getflaggednumbersstats', getFlaggedNumbersStats);
 router.delete('/wipe', wipeAnalyzedScreenshots); // wipe analyzed screenshots
+router.delete("/purge", purgeAnalyzedScreenshots);
+
 module.exports = router;
