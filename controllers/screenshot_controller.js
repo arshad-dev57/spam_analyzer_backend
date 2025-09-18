@@ -137,17 +137,20 @@ const uploadScreenshot = async (req, res) => {
   }
 };
 
-
-
 const getAllAnalyzedScreenshots = async (req, res) => {
   try {
+    // non-deleted records
     const all = await AnalyzedScreenshot
       .find({ isDeleted: { $ne: true } })
       .sort({ time: -1 });
 
+    // total records in collection (sab)
+    const total = await AnalyzedScreenshot.countDocuments();
+
     res.status(200).json({
       success: true,
-      count: all.length,
+      count: all.length,   // jo tum abhi return kar rahe ho
+      total,               // total documents collection me
       data: all.map(item => ({
         screenshotUrl: item.imageUrl,
         extractedNumber: item.extractedNumber,
@@ -164,6 +167,7 @@ const getAllAnalyzedScreenshots = async (req, res) => {
     res.status(500).json({ success: false, error: 'Server error' });
   }
 };
+
 
 const getallfilteredscreenshots = async (req, res) => {
   try {
