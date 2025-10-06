@@ -136,19 +136,53 @@ const uploadScreenshot = async (req, res) => {
     return res.status(500).json({ success: false, error: err.message });
   }
 };
-
-
-
+// GET /api/screenshot/getanalyzed?page=1&pageSize=20&search=424&carrier=Verizon&toNumber=+14245069239
 const getAllAnalyzedScreenshots = async (req, res) => {
   try {
-    const all = await AnalyzedScreenshot
-      .find({ isDeleted: { $ne: true } })
-      .sort({ time: -1 });
+    const pageSize   = Math.max(1, Number(req.query.pageSize) || 20);
+    const page       = Math.max(1, Number(req.query.page) || 1);
+    const { search, carrier, toNumber } = req.query;
+
+    // ---- Build filter ----
+    const filter = { isDeleted: { $ne: true } };
+
+    // carrier filter (case-insensitive, normalize like your UI)
+    if (carrier && carrier.trim()) {
+      filter.carrier = { $regex: `^${carrier.trim()}$`, $options: 'i' };
+    }
+
+    // toNumber exact (store is raw in DB, if you save with +1…, match that raw)
+    if (toNumber && toNumber.trim()) {
+      filter.toNumber = toNumber.trim();
+    }
+
+    // search on extractedNumber / toNumber (simple contains)
+    if (search && search.trim()) {
+      const q = search.trim();
+      filter.$or = [
+        { extractedNumber: { $regex: q, $options: 'i' } },
+        { toNumber:        { $regex: q, $options: 'i' } },
+      ];
+    }
+
+    const total = await AnalyzedScreenshot.countDocuments(filter);
+
+    const docs = await AnalyzedScreenshot
+      .find(filter)
+      .sort({ time: -1 })
+      .skip((page - 1) * pageSize)
+      .limit(pageSize)
+      .lean();
 
     res.status(200).json({
       success: true,
-      count: all.length,
-      data: all.map(item => ({
+      page,
+      pageSize,
+      total,                      // total matching records
+      totalPages: Math.max(1, Math.ceil(total / pageSize)),
+      hasPrev: page > 1,
+      hasNext: page * pageSize < total,
+      data: docs.map(item => ({
         screenshotUrl: item.imageUrl,
         extractedNumber: item.extractedNumber,
         id: item._id,
