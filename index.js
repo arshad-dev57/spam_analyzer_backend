@@ -71,12 +71,12 @@ if (require.main === module && !process.env.VERCEL) {
     const axios = require('axios');
     setInterval(async () => {
       try {
-        await axios.get('https://spam-analyzer-backend.onrender.com/api/ping');
+        await axios.get('https://spam-analyzer-backend-zr1v.onrender.com/api/ping');
         console.log(`[AutoPing] Successful at ${new Date().toISOString()}`);
       } catch (err) {
         console.error('[AutoPing] Failed:', err.message);
       }
-    }, 15 * 60 * 1000); // 15 minutes
+    }, 10 * 60 * 1000); 
   });
 }
 
