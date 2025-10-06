@@ -60,7 +60,7 @@ if (require.main === module && !process.env.VERCEL) {
           'http://localhost:5173',   // Vite / React
           'http://localhost:3000',   // Next/CRA
           'http://localhost:8081',   // Flutter web
-          'https://your-cms-domain.com'
+          'https://spam-analyzer-cms.vercel.app/'
         ],
   });
 
